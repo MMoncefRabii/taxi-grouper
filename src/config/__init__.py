@@ -43,6 +43,8 @@ class GrouperConfig:
     taxi_column: str = TAXI_COLUMN
     model_path: Path = DEFAULT_MODEL_PATH
     day_first: bool = True
+    excel_date_serial_min: int = 43831
+    excel_date_serial_max: int = 73415
 
 
 @dataclass(frozen=True)

@@ -100,7 +100,12 @@ def group_agents(
     if date_col is None:
         date_values = pd.Series(pd.NaT, index=result.index, dtype="datetime64[ns]")
     else:
-        date_values = _parse_dispatch_dates(result[date_col], day_first=config.day_first)
+        date_values = _parse_dispatch_dates(
+            result[date_col],
+            day_first=config.day_first,
+            excel_serial_min=config.excel_date_serial_min,
+            excel_serial_max=config.excel_date_serial_max,
+        )
     result["_DispatchDateKey"] = date_values.dt.strftime("%Y-%m-%d")
     dispatch_id_col = _find_source_dispatch_id_column(result)
     if dispatch_id_col is None:
@@ -162,6 +167,8 @@ def group_agents(
         taxi_column=config.taxi_column,
         capacity=capacity,
         day_first=config.day_first,
+        excel_serial_min=config.excel_date_serial_min,
+        excel_serial_max=config.excel_date_serial_max,
     )
     if validation["errors"]:
         warnings.extend(validation["errors"])
@@ -310,7 +317,12 @@ def _find_source_dispatch_id_column(df: pd.DataFrame) -> str | None:
     return None
 
 
-def _parse_dispatch_dates(values: pd.Series, day_first: bool = True) -> pd.Series:
+def _parse_dispatch_dates(
+    values: pd.Series,
+    day_first: bool = True,
+    excel_serial_min: int = 43831,
+    excel_serial_max: int = 73415,
+) -> pd.Series:
     parsed: list[pd.Timestamp | pd.NaT] = []
     for value in values:
         if pd.isna(value):
@@ -321,7 +333,7 @@ def _parse_dispatch_dates(values: pd.Series, day_first: bool = True) -> pd.Serie
             serial = float(value)
             parsed.append(
                 pd.to_datetime(serial, unit="D", origin="1899-12-30", errors="coerce")
-                if math.isfinite(serial)
+                if math.isfinite(serial) and excel_serial_min <= serial <= excel_serial_max
                 else pd.NaT
             )
         elif isinstance(value, str):
@@ -735,6 +747,8 @@ def validate_dispatch(
     taxi_column: str = TAXI_COLUMN,
     capacity: int = MAX_TAXI_CAPACITY,
     day_first: bool = True,
+    excel_serial_min: int = 43831,
+    excel_serial_max: int = 73415,
 ) -> dict[str, Any]:
     """
     Validate final taxi groups before export.
@@ -765,7 +779,12 @@ def validate_dispatch(
         taxi_warnings: list[str] = []
         date_col = _find_existing_col(group, ["Date"])
         if date_col is not None:
-            parsed_dates = _parse_dispatch_dates(group[date_col], day_first=day_first)
+            parsed_dates = _parse_dispatch_dates(
+                group[date_col],
+                day_first=day_first,
+                excel_serial_min=excel_serial_min,
+                excel_serial_max=excel_serial_max,
+            )
             if parsed_dates.isna().any():
                 taxi_errors.append("contains missing or invalid date")
             dates = sorted(parsed_dates.dropna().dt.strftime("%Y-%m-%d").unique().tolist())

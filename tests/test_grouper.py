@@ -74,6 +74,29 @@ def test_excel_serial_date_is_converted_from_excel_epoch():
     assert parsed.iloc[0] == pd.Timestamp("2026-04-03")
 
 
+def test_excel_serial_dates_outside_configured_range_are_unassigned():
+    df = pd.DataFrame(
+        {
+            "Date": [43830, 73416, 20260403],
+            "SourceDispatchID": ["dispatch-A"] * 3,
+            "Nom": ["Before range", "After range", "Compact date"],
+            "Adresse": ["Ariana"] * 3,
+            "Heure": ["07:00"] * 3,
+        }
+    )
+
+    grouped, _warnings = _group_agents(df, detect_columns(df), use_ml=False)
+
+    assert grouped["Groupe Taxi"].isna().all()
+    assert grouped["UnassignedReason"].eq("MISSING_DATE").all()
+
+
+def test_excel_serial_date_range_can_be_configured():
+    parsed = _parse_dispatch_dates(pd.Series([40000]), excel_serial_min=40000)
+
+    assert parsed.iloc[0] == pd.Timestamp("2009-07-06")
+
+
 def test_grouping_never_exceeds_four():
     df = pd.DataFrame(
         {
