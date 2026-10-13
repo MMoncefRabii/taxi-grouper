@@ -15,6 +15,7 @@ TEST_LIMIT = 128
 
 
 def _setup_grouping(monkeypatch):
+    monkeypatch.setenv("TAXI_GROUPER_API_KEY", "test-only-api-key-with-at-least-32-bytes")
     monkeypatch.setattr(service, "load_dispatch_excel", lambda *_args, **_kwargs: pd.DataFrame({"Address": ["A"]}))
     monkeypatch.setattr(service, "detect_columns", lambda _df: object())
     monkeypatch.setattr(service, "filter_dataframe", lambda df, *_args, **_kwargs: df)
@@ -46,7 +47,10 @@ def _call_asgi_request(
         "path": "/api/group",
         "raw_path": b"/api/group",
         "query_string": b"",
-        "headers": [(b"content-type", f"multipart/form-data; boundary={boundary}".encode())],
+        "headers": [
+            (b"content-type", f"multipart/form-data; boundary={boundary}".encode()),
+            (b"authorization", b"Bearer test-only-api-key-with-at-least-32-bytes"),
+        ],
         "client": ("testclient", 123),
         "server": ("testserver", 80),
     }

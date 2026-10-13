@@ -1,7 +1,8 @@
 import requests
+from api_test_support import api_auth_headers
 
 print('Fetching token from backend...')
-resp = requests.get('http://localhost:8000/api/auth/token')
+resp = requests.get('http://localhost:8000/api/auth/token', headers=api_auth_headers())
 resp.raise_for_status()
 token = resp.json().get('access_token')
 if not token:

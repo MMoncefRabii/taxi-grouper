@@ -1,5 +1,11 @@
 # Google Picker Debugging Guide
 
+> **Legacy reference only:** The React/Vite frontend is unsupported, is not to
+> be relaunched, and receives HTTP 401 on protected API routes. This guide
+> describes its retired Picker flow; the `frontend/` folder is retained only
+> as a reference for the later Fleet Tracker port. Do not follow the frontend
+> debugging instructions below.
+
 ## Overview
 This guide helps diagnose issues with the Google Picker integration in Taxi Grouper's frontend. The Picker is used to select and upload Google Sheets.
 

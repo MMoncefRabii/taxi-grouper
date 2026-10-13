@@ -7,6 +7,7 @@ after selecting it through the Picker?
 import json
 import requests
 from pathlib import Path
+from api_test_support import api_auth_headers
 
 # Get the token from the backend
 print("=" * 70)
@@ -16,7 +17,11 @@ print("=" * 70)
 # Step 1: Get token from backend
 print("\n[1] Fetching OAuth token from backend...")
 try:
-    token_response = requests.get('http://localhost:8000/api/auth/token', timeout=5)
+    token_response = requests.get(
+        'http://localhost:8000/api/auth/token',
+        headers=api_auth_headers(),
+        timeout=5,
+    )
     if token_response.status_code != 200:
         print(f"✗ Failed to get token: {token_response.status}")
         exit(1)

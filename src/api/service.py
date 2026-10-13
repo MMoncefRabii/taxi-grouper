@@ -23,6 +23,7 @@ from pydantic import BaseModel
 
 from src.core.preprocessing import load_dispatch_excel, detect_columns, filter_dataframe
 from src.core.grouper import group_agents, validate_dispatch
+from src.api.authentication import ApiKeyAuthMiddleware
 from src.api.launcher import get_api_host
 from src.adapters.exporter import export_excel
 from src.config import TAXI_COLUMN, MAX_TAXI_CAPACITY, UNKNOWN_ZONE, get_settings
@@ -191,6 +192,7 @@ app = FastAPI(
 )
 
 app.add_middleware(GroupUploadSizeLimitMiddleware)
+app.add_middleware(ApiKeyAuthMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.allowed_origins,

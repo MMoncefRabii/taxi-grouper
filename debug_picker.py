@@ -111,13 +111,14 @@ def test_token_endpoint():
     try:
         import requests
         from os import environ
+        from api_test_support import api_auth_headers
         
         backend_url = environ.get('VITE_BACKEND_URL', 'http://localhost:8000')
         endpoint = f"{backend_url}/api/auth/token"
         
         print(f"Testing endpoint: {endpoint}")
         
-        response = requests.get(endpoint, timeout=5)
+        response = requests.get(endpoint, headers=api_auth_headers(), timeout=5)
         print(f"Response status: {response.status_code}")
         
         if response.status_code == 200:

@@ -26,7 +26,7 @@ It supports Excel dispatch input, address normalization, zone compatibility, opt
 1. Windows, macOS, or Linux.
 2. Python 3.10+ installed and available as `python`.
 3. `pip` available in the selected Python environment.
-4. For the frontend only: Node.js and npm if you want to run the React/Vite app under `frontend/`.
+4. The React/Vite code under `frontend/` is retained only as a reference and is unsupported; do not run it.
 
 ---
 
@@ -49,16 +49,6 @@ pip install -r requirements-ui.txt
 
 > On macOS/Linux use `source .venv/bin/activate` instead of the Windows activate command.
 
-
-### Frontend environment
-
-If you run the frontend from `frontend/`, create a `frontend/.env` file containing:
-
-```dotenv
-VITE_GOOGLE_API_KEY=<your-Google-API-key>
-```
-
-The frontend uses `VITE_GOOGLE_API_KEY`, so a root `.env` with `GOOGLE_API_KEY` is not sufficient for Vite.
 
 ---
 
@@ -124,8 +114,26 @@ $env:API_HOST = "192.0.2.10"
 python api.py
 ```
 
-**Warning:** the OAuth routes are unauthenticated until Task 7a. Do not expose
-the service to a network or bind it to `0.0.0.0` before that work is complete.
+Business, debug, API documentation, and OAuth-management routes require the
+`TAXI_GROUPER_API_KEY` server environment variable and an
+`Authorization: Bearer <key>` header. `/health`, `/api/auth/login-url`, and
+`/auth/callback` are the only unauthenticated application endpoints (CORS
+`OPTIONS` preflight requests also pass without authentication). If the server key is
+missing or shorter than 32 characters, protected requests fail closed with
+HTTP 503; missing or incorrect caller credentials receive HTTP 401.
+
+Generate a strong key and configure it in the API process environment; do not
+put it in source control, the React bundle, or a URL:
+
+```powershell
+python -c "import secrets; print(secrets.token_urlsafe(32))"
+$env:TAXI_GROUPER_API_KEY = "<generated-key>"
+python api.py
+```
+
+**Warning:** OAuth login/callback remain temporary unauthenticated handshake
+routes; OAuth state validation is not implemented. The React/Vite frontend is
+unsupported and will receive HTTP 401 on protected routes. Do not relaunch it.
 
 Available endpoints include:
 
@@ -134,7 +142,7 @@ Available endpoints include:
 - `GET /api/auth/status` — OAuth sign-in status
 - `POST /api/group-sheet` — group agents from a Google Sheet and write results back
 
-For frontend builders or scripting integrations, see [`docs/api_usage.md`](docs/api_usage.md).
+For service-to-service API callers, see [`docs/api_usage.md`](docs/api_usage.md).
 
 The backend uses shared services from `src.api`, `src.core`, and `src.data`.
 
@@ -282,7 +290,7 @@ Other key folders:
 - `data/` — runtime data, corrected outputs, OAuth token storage
 - `models/` — trained ML artifacts and metadata
 - `outputs/` — generated Excel export outputs
-- `frontend/` — React/Vite frontend code
+- `frontend/` — unsupported React/Vite reference code; do not run
 - `tests/` — unit and integration tests
 
 ---
@@ -331,15 +339,11 @@ Other key folders:
 - ML ordering is optional and cannot override hard zone rules.
 - Unknown addresses are preserved and flagged separately.
 
-### Optional frontend
+### Retired React frontend
 
-If you want to inspect or extend the React/Vite frontend under `frontend/`, install Node dependencies and use:
-
-```bash
-cd frontend
-npm install
-npm run dev
-```
+The `frontend/` folder is retained only as a reference for the later Fleet
+Tracker Sheets/Picker port. It is unsupported, protected API routes reject it
+with HTTP 401, and it must not be relaunched.
 
 ---
 

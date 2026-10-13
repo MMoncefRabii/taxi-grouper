@@ -1,7 +1,30 @@
 # Taxi Grouper API Usage
 
 This document describes the backend API contract for the Taxi Grouper application.
-It is intended for frontend builders, automation scripts, or any integration that needs to interact with the backend directly.
+It is intended for service-to-service callers such as Fleet Tracker and for local test/debug scripts.
+
+The React/Vite frontend in `frontend/` is unsupported and will receive HTTP
+401 on protected routes. Do not relaunch it; the folder remains only as a
+reference for the later Fleet Tracker Sheets/Picker port.
+
+## Authentication
+
+All application routes require the API key except `GET /health`, `GET
+/api/auth/login-url`, and `GET /auth/callback`. CORS `OPTIONS` preflight
+requests also pass without authentication; they do not invoke protected route
+handlers. OAuth status, token, and logout routes are protected too. Send the
+key as a bearer credential:
+
+```http
+Authorization: Bearer <TAXI_GROUPER_API_KEY>
+```
+
+Configure `TAXI_GROUPER_API_KEY` only in the API process environment. Use a
+random value of at least 32 characters; for example, generate one with
+`python -c "import secrets; print(secrets.token_urlsafe(32))"`. Never include
+the key in code, browser bundles, URLs, or logs. When the server key is missing
+or too short, protected routes fail closed with HTTP 503. Missing or invalid
+caller credentials receive a generic HTTP 401 response.
 
 ## Overview
 
@@ -19,6 +42,8 @@ The backend exposes the following API routes:
 - `POST /api/save-drive`
 - `POST /api/group`
 - `POST /api/export`
+- `POST /api/debug/set-correction` (only when `DEBUG=1`, and still requires the API key)
+- `GET /api/debug/training-cache` (only when `DEBUG=1`, and still requires the API key)
 
 ## Authentication and Google OAuth
 
@@ -26,7 +51,7 @@ The backend exposes the following API routes:
 
 Returns a Google OAuth login URL for the current backend instance.
 
-Request: none
+Request: none; this OAuth handshake endpoint is unauthenticated.
 
 Response:
 
@@ -37,6 +62,7 @@ Response:
 ### `GET /api/auth/status`
 
 Returns whether the current user is signed in with Google OAuth.
+Requires the API key.
 
 Request: none
 
@@ -49,6 +75,8 @@ Response:
 ### `GET /api/auth/token`
 
 Returns a fresh access token for the signed-in user.
+Requires the API key. The React frontend is unsupported; only a trusted service
+caller should use this endpoint while the legacy Picker flow remains.
 
 Request: none
 
@@ -64,6 +92,7 @@ Response:
 ### `POST /api/auth/logout`
 
 Clears the stored Google OAuth session.
+Requires the API key.
 
 Request: none
 
@@ -77,7 +106,9 @@ Response:
 
 OAuth redirect callback URL.
 
-Used by Google during the OAuth flow. The endpoint redirects back to the frontend with `auth=success` or `auth=error`.
+Used by Google during the OAuth flow. This temporary handshake endpoint is
+unauthenticated and redirects back to the configured frontend URL with
+`auth=success` or `auth=error`. OAuth `state` validation is not implemented.
 
 Query params:
 - `code` for successful OAuth exchange
@@ -86,6 +117,8 @@ Query params:
 Response: redirect to frontend URL.
 
 ## Google Sheet Integration
+
+All business routes in this section require the bearer API key.
 
 ### `POST /api/sheet-info`
 
@@ -252,15 +285,15 @@ Response:
 - If the selected Drive file is an Office document, the backend will automatically convert it to a native Google Sheet and return the converted sheet URL.
 - `grouped_data` must be the array returned by `/api/group-sheet` or `/api/group`.
 - The backend performs grouping, validation, and export formatting.
-- The frontend only implements the UI and Google Picker/orchestration logic.
+- Do not embed the service API key in browser code. Fleet Tracker must call protected routes server-to-server.
 
 ## Minimal integration flow
 
-1. `GET /api/auth/login-url` → open OAuth URL
+1. `GET /api/auth/login-url` → open OAuth URL (unauthenticated OAuth handshake)
 2. complete Google OAuth via `/auth/callback`
-3. `GET /api/auth/token` → get active access token
-4. `POST /api/sheet-info` → load sheet metadata
-5. `POST /api/group-sheet` → group into sheet
-6. `POST /api/validate-sheet` → validate corrected results
-7. `POST /api/export` → download Excel export
-8. `POST /api/save-drive` → save to a new Drive sheet
+3. `GET /api/auth/token` → get active access token (send API key; temporary Picker support)
+4. `POST /api/sheet-info` → load sheet metadata (send API key)
+5. `POST /api/group-sheet` → group into sheet (send API key)
+6. `POST /api/validate-sheet` → validate corrected results (send API key)
+7. `POST /api/export` → download Excel export (send API key)
+8. `POST /api/save-drive` → save to a new Drive sheet (send API key)
