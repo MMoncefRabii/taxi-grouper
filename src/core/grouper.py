@@ -96,7 +96,7 @@ def group_agents(
     if date_col is None:
         date_values = pd.Series(pd.NaT, index=result.index, dtype="datetime64[ns]")
     else:
-        date_values = pd.to_datetime(result[date_col], errors="coerce")
+        date_values = _parse_dispatch_dates(result[date_col])
     result["_DispatchDateKey"] = date_values.dt.strftime("%Y-%m-%d")
     dispatch_id_col = _find_source_dispatch_id_column(result)
     if dispatch_id_col is None:
@@ -299,6 +299,10 @@ def _find_source_dispatch_id_column(df: pd.DataFrame) -> str | None:
         if normalized in aliases:
             return column
     return None
+
+
+def _parse_dispatch_dates(values: pd.Series) -> pd.Series:
+    return pd.to_datetime(values, errors="coerce")
 
 
 def _clean_source_dispatch_id(value: object) -> str | None:
@@ -720,7 +724,7 @@ def validate_dispatch(df: pd.DataFrame, taxi_column: str = TAXI_COLUMN, capacity
         taxi_warnings: list[str] = []
         date_col = _find_existing_col(group, ["Date"])
         if date_col is not None:
-            parsed_dates = pd.to_datetime(group[date_col], errors="coerce")
+            parsed_dates = _parse_dispatch_dates(group[date_col])
             if parsed_dates.isna().any():
                 taxi_errors.append("contains missing or invalid date")
             dates = sorted(parsed_dates.dropna().dt.strftime("%Y-%m-%d").unique().tolist())

@@ -1,6 +1,6 @@
 import pandas as pd
 
-from src.core.grouper import group_agents as _group_agents, validate_dispatch, validate_groups
+from src.core.grouper import _parse_dispatch_dates, group_agents as _group_agents, validate_dispatch, validate_groups
 from src.core.preprocessing import detect_columns
 
 
@@ -12,6 +12,12 @@ def group_agents(df, columns=None, **kwargs):
     if "SourceDispatchID" not in df.columns:
         df["SourceDispatchID"] = "legacy.xlsx | Sheet1 | 1"
     return _group_agents(df, columns=columns or detect_columns(df), **kwargs)
+
+
+def test_ambiguous_date_currently_uses_month_first_interpretation():
+    parsed = _parse_dispatch_dates(pd.Series(["03/04/2026"]))
+
+    assert parsed.iloc[0] == pd.Timestamp("2026-03-04")
 
 
 def test_grouping_never_exceeds_four():
