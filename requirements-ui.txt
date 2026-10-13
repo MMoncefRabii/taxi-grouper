@@ -1,0 +1,9 @@
+PySide6-Essentials
+openpyxl
+pandas
+scikit-learn
+rapidfuzz
+unidecode
+joblib
+numpy
+xlrd

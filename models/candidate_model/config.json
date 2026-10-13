@@ -1,0 +1,27 @@
+{
+  "accuracy": 0.47058823529411764,
+  "precision": 0.25,
+  "recall": 0.4,
+  "f1": 0.3076923076923077,
+  "files": [
+    "C:\\Users\\MSI\\AppData\\Local\\Temp\\tmpulsc0871\\synthetic_training.xlsx"
+  ],
+  "features": [
+    "same_zone",
+    "compatible_zone",
+    "same_exact_address",
+    "address_similarity_score",
+    "same_operation",
+    "same_site",
+    "same_time",
+    "same_type_course",
+    "same_client",
+    "zone_distance_score",
+    "commune_match",
+    "street_keyword_match",
+    "fuzzy_address_score",
+    "same_neighborhood",
+    "historical_frequency_score"
+  ],
+  "model": "RandomForestClassifier"
+}

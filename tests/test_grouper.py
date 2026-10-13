@@ -1,0 +1,231 @@
+import pandas as pd
+
+from src.core.grouper import group_agents, validate_groups
+from src.core.preprocessing import detect_columns
+
+
+def test_grouping_never_exceeds_four():
+    df = pd.DataFrame(
+        {
+            "Nom - Prenom": [f"Agent {i}" for i in range(10)],
+            "Adresse": ["Ettadhamen"] * 5 + ["Mnihla"] * 3 + ["Raoued"] * 2,
+            "Heure": ["07:00"] * 10,
+        }
+    )
+    grouped, _warnings = group_agents(df, detect_columns(df), use_ml=False)
+    validate_groups(grouped)
+    assert grouped.groupby("Groupe Taxi").size().max() <= 4
+
+
+def test_unknown_not_mixed_with_known():
+    df = pd.DataFrame({"Nom": ["A", "B"], "Adresse": ["Unknown place", "Ariana"]})
+    grouped, _warnings = group_agents(df, detect_columns(df), use_ml=False)
+    assert grouped["Groupe Taxi"].nunique() == 2
+
+
+def test_errafeha_groups_with_ibn_khaldoun_family_not_sidi_hssine():
+    df = pd.DataFrame(
+        {
+            "Nom": ["Errafeha", "Ibn", "Omrane", "Mnihla", "Sidi"],
+            "Adresse": ["cite errafeha ariana", "ibn khaldou", "omrane sup", "mnihla", "sidi hsin"],
+            "Heure": ["07:00"] * 5,
+        }
+    )
+    grouped, _warnings = group_agents(df, detect_columns(df), use_ml=False)
+    taxi_by_destination = grouped.groupby("DetectedDestination")["Groupe Taxi"].apply(set).to_dict()
+    errafeha_taxis = taxi_by_destination["Cite Errafeha"]
+    assert not errafeha_taxis.isdisjoint(taxi_by_destination["Ibn Khaldoun"])
+    assert not errafeha_taxis.isdisjoint(taxi_by_destination["Omrane"])
+    assert errafeha_taxis.isdisjoint(taxi_by_destination["Sidi Hssine"])
+
+
+def test_jaafer_family_stays_away_from_soukra():
+    df = pd.DataFrame(
+        {
+            "Nom": ["Jaafer", "Nour", "Ghazela", "Petite", "Soukra"],
+            "Adresse": ["jaafer", "nour jaafer", "ghazela", "ariana petite", "soukra"],
+            "Heure": ["07:00"] * 5,
+        }
+    )
+    grouped, _warnings = group_agents(df, detect_columns(df), use_ml=False)
+    taxi_by_destination = grouped.groupby("DetectedDestination")["Groupe Taxi"].apply(set).to_dict()
+    jaafer_taxis = taxi_by_destination["Jaafer"]
+    assert not jaafer_taxis.isdisjoint(taxi_by_destination["Ghazela"])
+    assert not jaafer_taxis.isdisjoint(taxi_by_destination["Ariana Soghra"])
+    assert jaafer_taxis.isdisjoint(taxi_by_destination["Soukra"])
+
+
+def test_soukra_never_groups_with_ghazela_family():
+    df = pd.DataFrame(
+        {
+            "Nom": ["Soukra", "Ghazela", "Gazelle", "Jaafer", "Nour"],
+            "Adresse": ["soukra", "ghazela", "cite gazelle", "jaafer", "nour jaafer"],
+            "Heure": ["07:00"] * 5,
+        }
+    )
+    grouped, _warnings = group_agents(df, detect_columns(df), use_ml=False)
+    taxi_by_destination = grouped.groupby("DetectedDestination")["Groupe Taxi"].apply(set).to_dict()
+    assert taxi_by_destination["Soukra"].isdisjoint(taxi_by_destination["Ghazela"])
+    assert taxi_by_destination["Soukra"].isdisjoint(taxi_by_destination["Jaafer"])
+    assert not taxi_by_destination["Jaafer"].isdisjoint(taxi_by_destination["Ghazela"])
+
+
+def test_ghazela_can_complete_with_ariana_family():
+    df = pd.DataFrame(
+        {
+            "Nom": ["Ghazela", "Ariana 1", "Ariana 2", "Ariana 3"],
+            "Adresse": ["cite el ghazala", "ariana", "ariana", "ariana"],
+            "Heure": ["07:00"] * 4,
+        }
+    )
+    grouped, _warnings = group_agents(df, detect_columns(df), use_ml=False)
+    assert grouped["Groupe Taxi"].nunique() == 1
+    assert set(grouped["DetectedDestination"]) == {"Ghazela", "Ariana"}
+
+
+def test_ghazela_is_preferred_with_three_ariana_rows():
+    df = pd.DataFrame(
+        {
+            "Nom": ["Ariana 1", "Ariana 2", "Ariana 3", "Gazelle", "Ghazela", "Jaafer"],
+            "Adresse": ["ariana", "ariana", "ariana", "cite la gazelle", "cite el ghazala", "nour jaafer"],
+            "Heure": ["07:00"] * 6,
+        }
+    )
+    grouped, _warnings = group_agents(df, detect_columns(df), use_ml=False)
+    ghazela_taxi = grouped[grouped["DetectedDestination"].eq("Ghazela")]["Groupe Taxi"].iloc[0]
+    taxi_destinations = grouped[grouped["Groupe Taxi"].eq(ghazela_taxi)]["DetectedDestination"].tolist()
+    assert taxi_destinations.count("Ariana") == 3
+    assert "Ghazela" in taxi_destinations
+
+
+def test_mornaguia_can_complete_with_oued_lil():
+    df = pd.DataFrame(
+        {
+            "Nom": ["Mornaguia 1", "Mornaguia 2", "Mornaguia 3", "Oued"],
+            "Adresse": ["mornaguia", "mornaguia", "mornaguia", "oued ellil manouba"],
+            "Heure": ["07:00"] * 4,
+        }
+    )
+    grouped, _warnings = group_agents(df, detect_columns(df), use_ml=False)
+    assert grouped["Groupe Taxi"].nunique() == 1
+    assert set(grouped["DetectedDestination"]) == {"Mornaguia", "Oued Lil"}
+
+
+def test_bortal_is_ksar_said_and_can_fill_with_bardo_zone():
+    df = pd.DataFrame(
+        {
+            "Nom": ["Bortal", "Bardo"],
+            "Adresse": ["bortal", "bardo"],
+            "Heure": ["07:00", "07:00"],
+        }
+    )
+    grouped, _warnings = group_agents(df, detect_columns(df), use_ml=False)
+    assert grouped["DetectedDestination"].tolist() == ["Bardo", "Ksar Said"] or grouped["DetectedDestination"].tolist() == ["Ksar Said", "Bardo"]
+    assert grouped["DestinationZone"].eq("F").all()
+    assert grouped["Groupe Taxi"].nunique() == 1
+
+
+def test_same_destination_remainder_stays_together_before_zone_fill():
+    df = pd.DataFrame(
+        {
+            "Nom": [f"Rades {i}" for i in range(6)] + ["Medina", "Ezzahra"],
+            "Adresse": [
+                "rades",
+                "cite med ali rades",
+                "rades plage",
+                "rue hannibal rades",
+                "rades med ali",
+                "rades centre",
+                "medina jedida",
+                "zahra",
+            ],
+            "Heure": ["07:00"] * 8,
+        }
+    )
+    grouped, _warnings = group_agents(df, detect_columns(df), use_ml=False)
+    rades_groups = grouped[grouped["DetectedDestination"].eq("Radès")].groupby("Groupe Taxi").size().sort_values().tolist()
+    assert rades_groups == [2, 4]
+
+
+def test_mourouj_variants_are_same_destination_and_stay_together():
+    df = pd.DataFrame(
+        {
+            "Nom": [f"Mourouj {i}" for i in range(6)],
+            "Adresse": ["mourouj 2", "mourouj 4", "mourouj 5", "mourouj 6", "mourouj 7", "el mourouj 7"],
+            "Heure": ["07:00"] * 6,
+        }
+    )
+    grouped, _warnings = group_agents(df, detect_columns(df), use_ml=False)
+    assert grouped["DetectedDestination"].eq("El Mourouj").all()
+    mourouj_groups = grouped.groupby("Groupe Taxi").size().sort_values().tolist()
+    assert mourouj_groups == [2, 4]
+
+
+def test_destination_remainder_is_not_split_when_filling_zone():
+    df = pd.DataFrame(
+        {
+            "Nom": [f"Mourouj {i}" for i in range(6)] + ["Naasen 1", "Naasen 2", "Kabaria"],
+            "Adresse": ["mourouj 2", "mourouj 4", "mourouj 5", "mourouj 6", "mourouj 7", "el mourouj 7", "naasen", "naasen", "kabaria"],
+            "Heure": ["07:00"] * 9,
+        }
+    )
+    grouped, _warnings = group_agents(df, detect_columns(df), use_ml=False)
+    remainder_taxis = grouped[grouped["DetectedDestination"].eq("El Mourouj")].groupby("Groupe Taxi").size().sort_values().tolist()
+    assert remainder_taxis == [2, 4]
+
+
+def test_destination_remainder_fills_with_same_zone_destination():
+    df = pd.DataFrame(
+        {
+            "Nom": [f"Agent {i}" for i in range(8)],
+            "Adresse": ["denden"] * 6 + ["bardo"] * 2,
+            "Heure": ["07:00"] * 8,
+        }
+    )
+    grouped, _warnings = group_agents(df, detect_columns(df), use_ml=False)
+    sizes = sorted(grouped.groupby("Groupe Taxi").size().tolist())
+    assert sizes == [4, 4]
+    mixed = grouped.groupby("Groupe Taxi")["DetectedDestination"].apply(lambda values: set(values)).tolist()
+    assert {"Danden"} in mixed
+    assert {"Danden", "Bardo"} in mixed
+
+
+def test_small_same_zone_destinations_merge_to_full_taxi():
+    df = pd.DataFrame(
+        {
+            "Nom": ["Aouina 1", "Aouina 2", "Lac", "Ain"],
+            "Adresse": ["aouina", "aouina", "lac 2", "ain zaghouen"],
+            "Heure": ["07:00"] * 4,
+        }
+    )
+    grouped, _warnings = group_agents(df, detect_columns(df), use_ml=False)
+    assert grouped["Groupe Taxi"].nunique() == 1
+    assert set(grouped["DetectedDestination"]) == {"Aouina", "Lac 2", "Ain Zaghouen"}
+
+
+def test_destination_overrides_inside_same_zone_f():
+    df = pd.DataFrame(
+        {
+            "Nom": ["Ibn 1", "Ibn 2", "Sidi", "Zah"],
+            "Adresse": ["ibn khaldoun", "ibn khaldou", "sidi hsin", "zahrouni"],
+            "Heure": ["07:00"] * 4,
+        }
+    )
+    grouped, _warnings = group_agents(df, detect_columns(df), use_ml=False)
+    taxi_by_destination = grouped.groupby("DetectedDestination")["Groupe Taxi"].apply(set).to_dict()
+    assert taxi_by_destination["Ibn Khaldoun"].isdisjoint(taxi_by_destination["Sidi Hssine"])
+    assert taxi_by_destination["Ibn Khaldoun"].isdisjoint(taxi_by_destination["Zahrouni"])
+    assert not taxi_by_destination["Sidi Hssine"].isdisjoint(taxi_by_destination["Zahrouni"])
+
+
+def test_rades_not_grouped_with_mornaguia():
+    df = pd.DataFrame(
+        {
+            "Nom": ["Rades", "Mornaguia"],
+            "Adresse": ["cite med ali rades", "mornaguia"],
+            "Heure": ["07:00", "07:00"],
+        }
+    )
+    grouped, _warnings = group_agents(df, detect_columns(df), use_ml=False)
+    assert grouped["DetectedDestination"].tolist() == ["Radès", "Mornaguia"]
+    assert grouped["Groupe Taxi"].nunique() == 2

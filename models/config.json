@@ -1,0 +1,27 @@
+{
+  "accuracy": 1.0,
+  "precision": 1.0,
+  "recall": 1.0,
+  "f1": 1.0,
+  "files": [
+    "data\\training_files\\sample_training.xlsx"
+  ],
+  "features": [
+    "same_zone",
+    "compatible_zone",
+    "same_exact_address",
+    "address_similarity_score",
+    "same_operation",
+    "same_site",
+    "same_time",
+    "same_type_course",
+    "same_client",
+    "zone_distance_score",
+    "commune_match",
+    "street_keyword_match",
+    "fuzzy_address_score",
+    "same_neighborhood",
+    "historical_frequency_score"
+  ],
+  "model": "RandomForestClassifier"
+}

@@ -1,0 +1,67 @@
+.env
+.env.*
+!.env.example
+frontend/.env
+frontend/.env.*
+!frontend/.env.example
+
+# Tokens and credentials
+*token*.json
+*credentials*.json
+client_secret*.json
+data/google_oauth_tokens.json
+
+# Local training data, corrections, and caches
+data/auto_training_corrections.jsonl
+data/unknown_destinations.csv
+data/retrain_state.json
+data/pre_correction_cache/
+data/raw/sample_agents.xlsx
+data/training_files/auto_corrections.xlsx
+data/training_files/sample_training.xlsx
+ml_vs_no_ml_comparison.csv
+sample_agents__ml_vs_no_ml.csv
+sample_training__ml_vs_no_ml.csv
+
+# Local model artifacts
+*.pkl
+*.joblib
+*.onnx
+models/**/training_report.json
+models/**/evaluation_report.json
+
+# Python environments and caches
+__pycache__/
+*.py[cod]
+.venv/
+.venv-*/
+venv/
+.pytest_cache/
+.mypy_cache/
+
+# Node dependencies and build output
+node_modules/
+frontend/dist/
+frontend/build/
+
+# PyInstaller output
+/build/
+/dist/
+
+# OS, editor, and temporary files
+Thumbs.db
+.DS_Store
+*.log
+*.tmp
+.idea/
+
+# Local exports and data-bearing spreadsheets
+test_ramassage.xlsx
+tmp_training_test.xlsx
+e2e_grouped_output.xlsx
+e2e_grouped_output_api.xlsx
+*.xls
+*.xlsm
+
+# Notebooks may contain output data
+*.ipynb
