@@ -23,6 +23,7 @@ from pydantic import BaseModel
 
 from src.core.preprocessing import load_dispatch_excel, detect_columns, filter_dataframe
 from src.core.grouper import group_agents, validate_dispatch
+from src.api.launcher import get_api_host
 from src.adapters.exporter import export_excel
 from src.config import TAXI_COLUMN, MAX_TAXI_CAPACITY, UNKNOWN_ZONE, get_settings
 from src.data.sheets_repository import (
@@ -830,4 +831,4 @@ async def export_grouped_data(
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host=get_api_host(), port=8000)
