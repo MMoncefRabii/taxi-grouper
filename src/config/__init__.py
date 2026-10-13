@@ -42,6 +42,7 @@ class GrouperConfig:
     max_capacity: int = MAX_TAXI_CAPACITY
     taxi_column: str = TAXI_COLUMN
     model_path: Path = DEFAULT_MODEL_PATH
+    day_first: bool = True
 
 
 @dataclass(frozen=True)

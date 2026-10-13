@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from datetime import date, datetime
 from itertools import combinations
+import math
+from numbers import Real
+import re
 from typing import Any
 
 import pandas as pd
@@ -96,7 +100,7 @@ def group_agents(
     if date_col is None:
         date_values = pd.Series(pd.NaT, index=result.index, dtype="datetime64[ns]")
     else:
-        date_values = _parse_dispatch_dates(result[date_col])
+        date_values = _parse_dispatch_dates(result[date_col], day_first=config.day_first)
     result["_DispatchDateKey"] = date_values.dt.strftime("%Y-%m-%d")
     dispatch_id_col = _find_source_dispatch_id_column(result)
     if dispatch_id_col is None:
@@ -153,7 +157,12 @@ def group_agents(
 
     result = result.drop(columns=["_DispatchDateKey", "_SourceDispatchIDKey"])
     result = result.sort_values([config.taxi_column, "_original_order"], kind="stable").drop(columns=["_original_order"]).reset_index(drop=True)
-    validation = validate_dispatch(result, taxi_column=config.taxi_column, capacity=capacity)
+    validation = validate_dispatch(
+        result,
+        taxi_column=config.taxi_column,
+        capacity=capacity,
+        day_first=config.day_first,
+    )
     if validation["errors"]:
         warnings.extend(validation["errors"])
     return result, warnings
@@ -301,8 +310,35 @@ def _find_source_dispatch_id_column(df: pd.DataFrame) -> str | None:
     return None
 
 
-def _parse_dispatch_dates(values: pd.Series) -> pd.Series:
-    return pd.to_datetime(values, errors="coerce")
+def _parse_dispatch_dates(values: pd.Series, day_first: bool = True) -> pd.Series:
+    parsed: list[pd.Timestamp | pd.NaT] = []
+    for value in values:
+        if pd.isna(value):
+            parsed.append(pd.NaT)
+        elif isinstance(value, (datetime, date, pd.Timestamp)):
+            parsed.append(pd.Timestamp(value))
+        elif isinstance(value, Real) and not isinstance(value, bool):
+            serial = float(value)
+            parsed.append(
+                pd.to_datetime(serial, unit="D", origin="1899-12-30", errors="coerce")
+                if math.isfinite(serial)
+                else pd.NaT
+            )
+        elif isinstance(value, str):
+            text = value.strip()
+            if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+                date_format = "%Y-%m-%d"
+            elif re.fullmatch(r"\d{2}/\d{2}/\d{4}", text):
+                date_format = "%d/%m/%Y" if day_first else "%m/%d/%Y"
+            elif re.fullmatch(r"\d{2}-\d{2}-\d{4}", text):
+                date_format = "%d-%m-%Y" if day_first else "%m-%d-%Y"
+            else:
+                parsed.append(pd.NaT)
+                continue
+            parsed.append(pd.to_datetime(text, format=date_format, errors="coerce"))
+        else:
+            parsed.append(pd.NaT)
+    return pd.Series(pd.to_datetime(parsed), index=values.index)
 
 
 def _clean_source_dispatch_id(value: object) -> str | None:
@@ -694,7 +730,12 @@ def _chunks(values: list[int], size: int) -> list[list[int]]:
     return [values[i : i + size] for i in range(0, len(values), size)]
 
 
-def validate_dispatch(df: pd.DataFrame, taxi_column: str = TAXI_COLUMN, capacity: int = MAX_TAXI_CAPACITY) -> dict[str, Any]:
+def validate_dispatch(
+    df: pd.DataFrame,
+    taxi_column: str = TAXI_COLUMN,
+    capacity: int = MAX_TAXI_CAPACITY,
+    day_first: bool = True,
+) -> dict[str, Any]:
     """
     Validate final taxi groups before export.
 
@@ -724,7 +765,7 @@ def validate_dispatch(df: pd.DataFrame, taxi_column: str = TAXI_COLUMN, capacity
         taxi_warnings: list[str] = []
         date_col = _find_existing_col(group, ["Date"])
         if date_col is not None:
-            parsed_dates = _parse_dispatch_dates(group[date_col])
+            parsed_dates = _parse_dispatch_dates(group[date_col], day_first=day_first)
             if parsed_dates.isna().any():
                 taxi_errors.append("contains missing or invalid date")
             dates = sorted(parsed_dates.dropna().dt.strftime("%Y-%m-%d").unique().tolist())

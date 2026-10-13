@@ -1,5 +1,6 @@
 import pandas as pd
 
+from src.config import GrouperConfig
 from src.core.grouper import _parse_dispatch_dates, group_agents as _group_agents, validate_dispatch, validate_groups
 from src.core.preprocessing import detect_columns
 
@@ -14,10 +15,63 @@ def group_agents(df, columns=None, **kwargs):
     return _group_agents(df, columns=columns or detect_columns(df), **kwargs)
 
 
-def test_ambiguous_date_currently_uses_month_first_interpretation():
+def test_ambiguous_day_first_date_is_april_3():
     parsed = _parse_dispatch_dates(pd.Series(["03/04/2026"]))
 
+    assert parsed.iloc[0] == pd.Timestamp("2026-04-03")
+
+
+def test_day_first_date_after_day_twelve_is_april_13():
+    parsed = _parse_dispatch_dates(pd.Series(["13/04/2026"]))
+
+    assert parsed.iloc[0] == pd.Timestamp("2026-04-13")
+
+
+def test_iso_date_is_parsed_as_april_3():
+    parsed = _parse_dispatch_dates(pd.Series(["2026-04-03"]))
+
+    assert parsed.iloc[0] == pd.Timestamp("2026-04-03")
+
+
+def test_day_first_option_is_configurable():
+    parsed = _parse_dispatch_dates(pd.Series(["03/04/2026"]), day_first=False)
+
     assert parsed.iloc[0] == pd.Timestamp("2026-03-04")
+
+
+def test_day_first_option_is_available_in_grouper_config():
+    df = pd.DataFrame(
+        {
+            "Date": ["03/04/2026", "2026-03-04"],
+            "SourceDispatchID": ["dispatch-A"] * 2,
+            "Nom": ["Agent 1", "Agent 2"],
+            "Adresse": ["Ariana"] * 2,
+            "Heure": ["07:00"] * 2,
+        }
+    )
+
+    grouped, _warnings = _group_agents(
+        df,
+        detect_columns(df),
+        config=GrouperConfig(day_first=False),
+        use_ml=False,
+    )
+
+    assert grouped["Groupe Taxi"].nunique() == 1
+
+
+def test_datetime_date_value_is_preserved():
+    value = pd.Timestamp("2026-04-03 14:25:36")
+
+    parsed = _parse_dispatch_dates(pd.Series([value]))
+
+    assert parsed.iloc[0] == value
+
+
+def test_excel_serial_date_is_converted_from_excel_epoch():
+    parsed = _parse_dispatch_dates(pd.Series([46115]))
+
+    assert parsed.iloc[0] == pd.Timestamp("2026-04-03")
 
 
 def test_grouping_never_exceeds_four():
@@ -137,7 +191,27 @@ def test_same_dispatch_block_still_groups_normally():
     grouped, _warnings = _group_agents(df, detect_columns(df), use_ml=False)
 
     assert grouped["Groupe Taxi"].nunique() == 1
+    assert grouped.groupby("Groupe Taxi")["Nom"].apply(set).to_dict() == {
+        1: {"Agent 0", "Agent 1", "Agent 2", "Agent 3"}
+    }
     assert grouped["UnassignedReason"].eq("").all()
+
+
+def test_unparseable_date_is_unassigned_with_missing_date_reason():
+    df = pd.DataFrame(
+        {
+            "Date": ["04/31/2026"],
+            "SourceDispatchID": ["dispatch-A"],
+            "Nom": ["Invalid date"],
+            "Adresse": ["Ariana"],
+            "Heure": ["07:00"],
+        }
+    )
+
+    grouped, _warnings = _group_agents(df, detect_columns(df), use_ml=False)
+
+    assert pd.isna(grouped.loc[0, "Groupe Taxi"])
+    assert grouped.loc[0, "UnassignedReason"] == "MISSING_DATE"
 
 
 def test_unknown_not_mixed_with_known():
