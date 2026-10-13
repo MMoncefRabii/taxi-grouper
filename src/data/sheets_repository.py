@@ -21,6 +21,7 @@ from googleapiclient.http import MediaIoBaseDownload
 
 from ..config import get_settings
 from ..core.preprocessing import add_dispatch_block_metadata, is_repeated_header_row, load_dispatch_excel
+from ..schemas import UNASSIGNED_STATUS_BY_REASON
 
 SETTINGS = get_settings()
 DATA_DIR = Path(__file__).resolve().parents[1] / "data"
@@ -67,6 +68,7 @@ CLIENT_SHEET_COLUMNS = [
     "Heure d'arrivée",
     "Groupe Taxi",
     "PRIX",
+    "Statut",
 ]
 CLIENT_HEADER_FILL = "#000000"
 CLIENT_HEADER_TEXT_COLOR = "#FFA500"
@@ -615,6 +617,10 @@ def _build_client_row(row: pd.Series) -> list[str]:
     taxi_value = row.get("Groupe Taxi") if "Groupe Taxi" in row else row.get("Taxi")
     if pd.isna(taxi_value):
         taxi_value = ""
+    status = row.get("AssignmentStatus")
+    if pd.isna(status) or not str(status).strip():
+        reason = str(row.get("UnassignedReason", "") or "")
+        status = UNASSIGNED_STATUS_BY_REASON.get(reason, "")
 
     return [
         pref(["Date"]),
@@ -627,6 +633,7 @@ def _build_client_row(row: pd.Series) -> list[str]:
         pref(["Heure d'arrivée", "Heure", "Heure de départ", "Heure d'arrivee"]),
         str(taxi_value),
         pref(["PRIX", "Prix", "Price"]),
+        str(status),
     ]
 
 

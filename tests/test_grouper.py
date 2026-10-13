@@ -87,7 +87,7 @@ def test_excel_serial_dates_outside_configured_range_are_unassigned():
 
     grouped, _warnings = _group_agents(df, detect_columns(df), use_ml=False)
 
-    assert grouped["Groupe Taxi"].isna().all()
+    assert grouped["Groupe Taxi"].eq("").all()
     assert grouped["UnassignedReason"].eq("MISSING_DATE").all()
 
 
@@ -195,8 +195,54 @@ def test_missing_or_unparseable_date_and_missing_dispatch_id_are_unassigned():
 
     grouped, _warnings = _group_agents(df, detect_columns(df), use_ml=False)
 
-    assert grouped["Groupe Taxi"].isna().all()
+    assert grouped["Groupe Taxi"].eq("").all()
     assert grouped["UnassignedReason"].tolist() == ["MISSING_DATE", "MISSING_DATE", "MISSING_DISPATCH_ID"]
+    assert grouped["AssignmentStatus"].tolist() == [
+        "A CORRIGER: date manquante",
+        "A CORRIGER: date manquante",
+        "A CORRIGER: identifiant de dispatch manquant",
+    ]
+
+
+def test_invalid_rows_have_no_taxi_and_do_not_shift_valid_taxi_numbers():
+    df = pd.DataFrame(
+        {
+            "Date": [None, "2026-05-28", "2026-05-28"],
+            "SourceDispatchID": ["dispatch-A", "dispatch-A", "dispatch-A"],
+            "Nom": ["Missing date", "Valid 1", "Valid 2"],
+            "Adresse": ["Ariana"] * 3,
+            "Heure": ["07:00"] * 3,
+        }
+    )
+
+    grouped, _warnings = _group_agents(df, detect_columns(df), use_ml=False)
+
+    invalid = grouped[grouped["UnassignedReason"] == "MISSING_DATE"].iloc[0]
+    valid = grouped[grouped["UnassignedReason"] == ""]
+    assert invalid["Groupe Taxi"] == ""
+    assert invalid["AssignmentStatus"] == "A CORRIGER: date manquante"
+    assert set(valid["Groupe Taxi"]) == {1}
+
+
+def test_validate_dispatch_does_not_report_unassigned_blank_taxi_as_error():
+    df = pd.DataFrame(
+        {
+            "Date": [None],
+            "SourceDispatchID": ["dispatch-A"],
+            "Groupe Taxi": [7],
+            "UnassignedReason": ["MISSING_DATE"],
+            "AssignmentStatus": ["A CORRIGER: date manquante"],
+            "Adresse": ["Ariana"],
+            "Zone": ["H"],
+        }
+    )
+
+    validation = validate_dispatch(df)
+
+    assert validation["valid"]
+    assert validation["errors"] == []
+    assert any("MISSING_DATE" in warning for warning in validation["warnings"])
+    assert validation["dataframe"].loc[0, "Groupe Taxi"] == ""
 
 
 def test_same_dispatch_block_still_groups_normally():
@@ -233,7 +279,7 @@ def test_unparseable_date_is_unassigned_with_missing_date_reason():
 
     grouped, _warnings = _group_agents(df, detect_columns(df), use_ml=False)
 
-    assert pd.isna(grouped.loc[0, "Groupe Taxi"])
+    assert grouped.loc[0, "Groupe Taxi"] == ""
     assert grouped.loc[0, "UnassignedReason"] == "MISSING_DATE"
 
 

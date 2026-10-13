@@ -59,18 +59,19 @@
 ## Unassigned reason codes
 
 - [VERIFIED in code: `src/core/grouper.py` `group_agents`] The only assigned `UnassignedReason` codes are `MISSING_DATE` and `MISSING_DISPATCH_ID`. `MISSING_DATE` is set for a missing or unparsable date; `MISSING_DISPATCH_ID` is set when the date is valid but the source dispatch ID is missing.
-- [VERIFIED in code: `src/core/grouper.py` `group_agents`, `_group_block`] Invalid-date/ID rows are excluded from cross-row grouping and become singleton groups in the returned dataframe; the stable reason is retained in `UnassignedReason`. The rows may therefore still have a taxi number, but must not be interpreted as safely grouped with other rows.
+- [VERIFIED in code: `src/core/grouper.py` `group_agents`, `validate_dispatch`] Rows with either reason are excluded from grouping, have an empty taxi value, and carry an `AssignmentStatus` of `A CORRIGER: date manquante` or `A CORRIGER: identifiant de dispatch manquant`. Their `UnassignedReason` is retained. They do not consume taxi numbers, and validation reports their reason as a warning rather than as a missing-taxi error.
 - [VERIFIED in code: `src/core/grouper.py` `group_agents`] There is no separate `AMBIGUOUS_DATE` reason code; invalid date strings use `MISSING_DATE`.
 - [VERIFIED in code: `src/core/grouper.py` `_group_block`] `Unknown address`, `Manual review required`, and `Single remaining agent` are `GroupReason` descriptions, not `UnassignedReason` codes.
 - [INFERRED] Fleet Tracker should treat `UnassignedReason` as the authoritative machine-readable reason and keep it distinct from explanatory grouping/review text.
 
 ## Output tabs and write-back
 
-- [VERIFIED in code: `src/data/sheets_repository.py` `CLIENT_SHEET_NAME`, `INTERNAL_SHEET_NAME`, `CLIENT_SHEET_COLUMNS`] Output uses a client-facing tab named `Taxi Grouper Client Output` with columns, in order: `Date`, `Matricule`, `Nom - Prénom`, `Opération`, `Site`, `Numéro`, `Adresse`, `Heure d'arrivée`, `Groupe Taxi`, `PRIX`.
+- [VERIFIED in code: `src/data/sheets_repository.py` `CLIENT_SHEET_NAME`, `INTERNAL_SHEET_NAME`, `CLIENT_SHEET_COLUMNS`] Output uses a client-facing tab named `Taxi Grouper Client Output` with columns, in order: `Date`, `Matricule`, `Nom - Prénom`, `Opération`, `Site`, `Numéro`, `Adresse`, `Heure d'arrivée`, `Groupe Taxi`, `PRIX`, `Statut`. Unassigned rows have an empty `Groupe Taxi` value and show the human-readable status in `Statut`.
 - [VERIFIED in code: `src/data/sheets_repository.py` `write_grouped_df_to_sheet`] The internal tab is named `Taxi Grouper Internal` and receives every column present in the grouped dataframe, including internal destination, validation, source, and reason fields when present.
 - [VERIFIED in code: `src/data/sheets_repository.py` `write_grouped_df_to_sheet`, `_set_sheet_hidden`] The internal tab is marked hidden; the client tab is returned as the output URL and receives client-facing formatting. Formatting is best effort and failure is swallowed without failing the main write.
 - [VERIFIED in code: `src/data/sheets_repository.py` `_ensure_destination_spreadsheet`, `_ensure_sheet`] For a native Google Sheet, output tabs are written into that same spreadsheet. For an Office file, the API first converts it to a native Google Sheet; the output is written to the converted spreadsheet. Existing tabs with the output names are reused.
 - [VERIFIED in code: `src/data/sheets_repository.py` `_write_values_to_sheet`] Each target output tab is cleared and rewritten from cell A1 using the Sheets API with `valueInputOption="RAW"`.
+- [VERIFIED in code: `src/adapters/exporter.py` `export_excel`, `export_like_historique`] Excel exports retain the empty taxi value and expose the human-readable unassigned status (`AssignmentStatus` in the grouped-data export and `Statut` in the Historique-style export). Summary taxi counts and per-taxi totals include assigned rows only.
 - [VERIFIED in code: `src/data/sheets_repository.py` `_collapse_grouped_taxi_values`, `write_grouped_df_to_sheet`] Repeated taxi values in the client tab are collapsed for display; the internal tab is written from the full grouped dataframe values.
 - [VERIFIED in code: `src/data/sheets_repository.py` `_set_sheet_hidden`] Hiding is a Google Sheets visibility property only. It does not restrict access to the spreadsheet or protect the hidden tab from a user with spreadsheet access.
 - [INFERRED] The internal tab should be treated as operationally sensitive because it contains more detail than the client tab; hiding it is not a confidentiality boundary.
@@ -82,6 +83,5 @@
 - [INFERRED] What should define a dispatch block when a workbook/tab lacks both a dispatch-ID column and recognizable repeated Historique headers? Current behavior synthesizes one block per source sheet/tab section rather than deriving one per date.
 - [INFERRED] Should Fleet Tracker preserve original source column names alongside canonical field names, and which optional columns should become required?
 - [INFERRED] Which destination alias dataset and alias-editing workflow should Fleet Tracker use, and how should alias changes be audited?
-- [INFERRED] Should invalid-date or missing-ID singleton rows be presented as unassigned without a taxi number, even though the current result can assign a singleton taxi number?
 - [INFERRED] Which internal fields are approved for Fleet Tracker operators, clients, and other callers, and should internal results be stored separately instead of in a hidden tab?
 - [INFERRED] Should the port retain in-place write-back for native Google Sheets and conversion-based write-back for Office files, or use a separate output spreadsheet in both cases?
