@@ -150,7 +150,7 @@ def check_tokens_file():
     print("\n=== Checking Tokens File ===")
     
     token_paths = [
-        Path('data/google_oauth_tokens.json'),
+        Path('src/data/google_oauth_tokens.json'),
         Path.home() / '.taxi_grouper' / 'google_oauth_tokens.json',
     ]
     

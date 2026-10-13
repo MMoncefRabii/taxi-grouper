@@ -113,8 +113,19 @@ The Streamlit app uses shared core grouping logic from `src.core`.
 The API backend is defined in `src/api/service.py`.
 
 ```bash
-uvicorn api:app --reload
+python api.py
 ```
+
+The root launcher binds to `127.0.0.1` by default. Set `API_HOST` to an
+explicit interface address to bind elsewhere, for example in PowerShell:
+
+```powershell
+$env:API_HOST = "192.0.2.10"
+python api.py
+```
+
+**Warning:** the OAuth routes are unauthenticated until Task 7a. Do not expose
+the service to a network or bind it to `0.0.0.0` before that work is complete.
 
 Available endpoints include:
 
@@ -127,7 +138,16 @@ For frontend builders or scripting integrations, see [`docs/api_usage.md`](docs/
 
 The backend uses shared services from `src.api`, `src.core`, and `src.data`.
 
-> Google Sheet integration requires proper Google OAuth setup. Token state is stored in `data/google_oauth_tokens.json`, and the system no longer persists `client_secret` there.
+> Google Sheet integration requires proper Google OAuth setup. Token state is stored in `src/data/google_oauth_tokens.json`, and the system no longer persists `client_secret` there.
+
+On Windows, restrict access to the token file and its containing `src\data`
+directory to the account that runs the API, `SYSTEM`, and Administrators. The
+directory currently inherits Modify access for Authenticated Users, so changing
+only the token file ACL may still allow another user to replace it through the
+parent directory. Apply ACL changes manually after confirming the service
+account; keep Modify access for that account so token refresh and atomic writes
+continue to work. Review the impact on other files in `src\data` before
+removing inherited permissions.
 
 > **Current deployment model:** the app is designed for a single server instance using local filesystem persistence only (`data/` and `models/`). This is safe for one server / one client deployment, but multi-instance/load-balanced deployment is a known future constraint.
 
@@ -327,4 +347,4 @@ npm run dev
 
 - If `streamlit` is not found, confirm the virtual environment is active and that `streamlit` is installed.
 - If Excel files fail to load, verify the file format is `.xlsx` or `.xls` and that the sheet contains recognized headers.
-- If Google Sheet operations fail, ensure OAuth credentials are configured and `data/google_oauth_tokens.json` is writable.
+- If Google Sheet operations fail, ensure OAuth credentials are configured and `src/data/google_oauth_tokens.json` is writable.

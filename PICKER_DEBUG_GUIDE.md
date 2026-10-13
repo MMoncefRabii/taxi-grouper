@@ -197,7 +197,7 @@ Should both be `true` after picker loads.
 ### Issue 5: "Invalid grant" error in backend logs
 **Cause:** Refresh token expired or revoked.
 **Solution:**
-1. Delete stored credentials: `rm data/google_oauth_tokens.json` (if using file storage)
+1. Delete stored credentials: `rm src/data/google_oauth_tokens.json` (if using file storage)
 2. Sign out and sign back in
 3. Check backend logs for detailed error
 
