@@ -151,7 +151,9 @@ Response:
 ### `POST /api/validate-sheet`
 
 Validates the current client-facing results sheet after manual corrections.
-It also extracts correction training examples and may schedule retraining.
+It also extracts correction training examples and may schedule candidate
+retraining. Automatic retraining does not replace the active model; promoting a
+candidate requires the separately documented human-approved promotion command.
 
 Request body:
 

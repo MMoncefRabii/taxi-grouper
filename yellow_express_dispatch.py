@@ -31,7 +31,7 @@ from PySide6.QtWidgets import (
 from src.config import TAXI_COLUMN, UNKNOWN_ZONE
 from src.adapters.exporter import export_like_historique
 from src.core.grouper import group_agents, validate_dispatch
-from src.core.ml_model import train_model_from_historique_excel
+from src.core.ml_model import train_candidate_from_historique_excel
 from src.core.preprocessing import detect_columns, filter_dataframe, load_dispatch_excel
 
 
@@ -373,7 +373,7 @@ class YellowExpressDispatch(QMainWindow):
         self.train_button.setText("TRAINING...")
         QApplication.processEvents()
         try:
-            report = train_model_from_historique_excel(str(self.training_file), "models")
+            report = train_candidate_from_historique_excel(str(self.training_file))
         except Exception as exc:
             self.train_button.setEnabled(True)
             self.train_button.setText("TRAIN MODEL")
@@ -382,7 +382,12 @@ class YellowExpressDispatch(QMainWindow):
         self.train_button.setEnabled(True)
         self.train_button.setText("TRAIN MODEL")
         self._show_training_metrics(report)
-        QMessageBox.information(self, "Training Complete", "Model trained and saved to models/taxi_grouping_model.pkl")
+        QMessageBox.information(
+            self,
+            "Candidate Training Complete",
+            "Candidate model saved to models/candidate. The active model was not changed. "
+            "Use the documented manual promotion procedure to approve it.",
+        )
 
     def _show_training_metrics(self, report: dict) -> None:
         while self.training_metrics_grid.count():

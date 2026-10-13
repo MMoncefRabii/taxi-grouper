@@ -144,21 +144,39 @@ Training expects historical or corrected Excel data containing a valid address c
 Train a model with:
 
 ```bash
-python train.py --data data/training_files/ --output models/
+python train.py --data data/training_files/
 ```
 
 Or train from corrected data:
 
 ```bash
-python train.py --data data/corrected/ --output models/
+python train.py --data data/corrected/
 ```
 
-The model files are saved under `models/`:
+Training writes a candidate under `models/candidate/` by default and never
+overwrites the active `models/taxi_grouping_model.pkl`. An explicit
+`--output models/` is rejected for the same reason. Automatic retraining after
+corrections also evaluates and stores a candidate only; it does not activate it.
 
-- `models/taxi_grouping_model.pkl`
-- `models/config.json`
+Promotion is disabled by default. After reviewing the candidate metrics, enable
+the promotion gate and explicitly approve the candidate:
 
-If no trained model exists, the system falls back to rule-based grouping.
+```powershell
+$env:MODEL_PROMOTION_ENABLED = "true"
+python promote_model.py promote --approve --approved-by "Your Name"
+```
+
+The command records the approver, time, candidate version, and metrics in
+`models/promotion_log.jsonl`, and saves the previous active model under
+`models/rollback/`. To restore the most recently saved active model:
+
+```powershell
+python promote_model.py rollback --approve --approved-by "Your Name"
+```
+
+The Yellow Express desktop training workflow also saves to `models/candidate/`;
+its subsequent dispatch actions continue to load the active model. If no active
+trained model exists, the system falls back to rule-based grouping.
 
 ---
 

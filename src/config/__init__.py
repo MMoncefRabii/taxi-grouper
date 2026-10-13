@@ -20,6 +20,7 @@ DATA_DIR = PROJECT_ROOT / "data"
 MODELS_DIR = PROJECT_ROOT / "models"
 OUTPUTS_DIR = PROJECT_ROOT / "outputs"
 DEFAULT_MODEL_PATH = MODELS_DIR / "taxi_grouping_model.pkl"
+DEFAULT_CANDIDATE_MODEL_PATH = MODELS_DIR / "candidate" / DEFAULT_MODEL_PATH.name
 DEFAULT_CONFIG_PATH = MODELS_DIR / "config.json"
 
 
@@ -61,8 +62,18 @@ class Settings:
         "https://www.googleapis.com/auth/drive.file",
     ])
     retrain_threshold: int = int(os.getenv("RETRAIN_THRESHOLD", "20"))
+    model_promotion_enabled: bool = False
 
 
 def get_settings() -> Settings:
     origins = [origin.strip() for origin in os.getenv("ALLOWED_ORIGINS", "http://localhost:5173").split(",") if origin.strip()]
-    return Settings(allowed_origins=origins)
+    model_promotion_enabled = os.getenv("MODEL_PROMOTION_ENABLED", "false").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    return Settings(
+        allowed_origins=origins,
+        model_promotion_enabled=model_promotion_enabled,
+    )

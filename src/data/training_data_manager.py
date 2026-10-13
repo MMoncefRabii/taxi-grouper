@@ -8,6 +8,7 @@ as training examples to improve future grouping decisions.
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import shutil
 import tempfile
@@ -16,34 +17,36 @@ import unicodedata
 import logging
 import urllib.parse
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from tempfile import TemporaryDirectory
 from typing import Any
 
 import pandas as pd
 from sklearn.metrics import accuracy_score
 
-from src.config import DEFAULT_MODEL_PATH
+from src.config import DEFAULT_CANDIDATE_MODEL_PATH, DEFAULT_MODEL_PATH
 from src.core.ml_model import (
     HISTORIQUE_COLUMNS,
     load_model,
     train_model_from_historique_excel,
     prepare_historique_pairwise_examples,
 )
+from src.core.model_storage import ensure_model_write_allowed
 
 logger = logging.getLogger(__name__)
 
 AUTO_TRAINING_JSONL_PATH = Path("data/auto_training_corrections.jsonl")
 AUTO_TRAINING_DEBUG_JSONL_PATH = Path("data/auto_training_corrections.debug.jsonl")
 RETRAIN_STATE_PATH = Path("data/retrain_state.json")
-CANDIDATE_MODEL_DIR = DEFAULT_MODEL_PATH.parent / "candidate"
-CANDIDATE_MODEL_PATH = CANDIDATE_MODEL_DIR / DEFAULT_MODEL_PATH.name
+CANDIDATE_MODEL_DIR = DEFAULT_CANDIDATE_MODEL_PATH.parent
+CANDIDATE_MODEL_PATH = DEFAULT_CANDIDATE_MODEL_PATH
 EVALUATION_REPORT_PATH = DEFAULT_MODEL_PATH.parent / "evaluation_report.json"
 PRE_CORRECTION_CACHE_DIR = Path("data/pre_correction_cache")
 
 _PRE_CORRECTION_CACHE_LOCK = threading.Lock()
 _AUTO_TRAINING_JSONL_LOCK = threading.Lock()
 _RETRAIN_STATE_LOCK = threading.Lock()
+_MODEL_PROMOTION_LOCK = threading.Lock()
 
 
 def _get_training_corrections_path() -> Path:
@@ -613,13 +616,154 @@ def evaluate_historique_model_on_dataframe(model: Any, df: pd.DataFrame) -> dict
     }
 
 
-def promote_candidate_model(active_model_path: Path, candidate_model_path: Path) -> None:
-    active_model_path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(delete=False, dir=str(active_model_path.parent), suffix=".tmp") as tmp:
-        tmp_path = Path(tmp.name)
-        tmp.close()
-    shutil.copy2(candidate_model_path, tmp_path)
-    os.replace(tmp_path, active_model_path)
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as model_file:
+        for chunk in iter(lambda: model_file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _copy_file_atomically(
+    source: Path,
+    destination: Path,
+    active_model_path: Path,
+) -> None:
+    ensure_model_write_allowed(
+        destination,
+        active_model_path=active_model_path,
+        approved_promotion=True,
+    )
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, dir=destination.parent, suffix=".tmp") as temp_file:
+            temp_path = Path(temp_file.name)
+        shutil.copy2(source, temp_path)
+        os.replace(temp_path, destination)
+    finally:
+        if temp_path is not None and temp_path.exists():
+            temp_path.unlink()
+
+
+def _append_promotion_log(log_path: Path, entry: dict[str, Any]) -> None:
+    existing = log_path.read_text(encoding="utf-8") if log_path.exists() else ""
+    _atomic_write_text(
+        log_path,
+        existing + json.dumps(entry, ensure_ascii=False, sort_keys=True) + "\n",
+    )
+
+
+def promote_candidate_model(
+    active_model_path: Path,
+    candidate_model_path: Path,
+    *,
+    approved: bool = False,
+    approved_by: str = "",
+    candidate_version: str | None = None,
+    metrics: dict[str, Any] | None = None,
+) -> None:
+    """Promote a candidate only after explicit, configured human approval."""
+    active_path = Path(active_model_path)
+    candidate_path = Path(candidate_model_path)
+    if not approved:
+        raise PermissionError("Promotion requires explicit human approval (approved=True or CLI --approve).")
+    if not approved_by.strip():
+        raise ValueError("approved_by must identify the human approving this promotion.")
+    if metrics is None or not isinstance(metrics, dict):
+        raise ValueError("Promotion requires candidate evaluation/training metrics to record.")
+    ensure_model_write_allowed(
+        active_path,
+        active_model_path=active_path,
+        approved_promotion=True,
+    )
+    if not active_path.is_file():
+        raise FileNotFoundError(f"Active model not found: {active_path}")
+    if not candidate_path.is_file():
+        raise FileNotFoundError(f"Candidate model not found: {candidate_path}")
+
+    timestamp = datetime.now(timezone.utc).isoformat()
+    version = candidate_version or _sha256_file(candidate_path)
+    backup_dir = active_path.parent / "rollback"
+    backup_path = backup_dir / f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')}_{_sha256_file(active_path)[:12]}.pkl"
+    log_path = active_path.parent / "promotion_log.jsonl"
+    entry = {
+        "action": "promote",
+        "approved_by": approved_by.strip(),
+        "candidate_version": version,
+        "timestamp": timestamp,
+        "metrics": metrics,
+    }
+    json.dumps(entry, ensure_ascii=False)
+
+    with _MODEL_PROMOTION_LOCK:
+        previous_hash = _sha256_file(active_path)
+        _copy_file_atomically(active_path, backup_path, active_path)
+        try:
+            _copy_file_atomically(candidate_path, active_path, active_path)
+            _append_promotion_log(log_path, entry)
+        except Exception:
+            if _sha256_file(active_path) != previous_hash:
+                restore_path = active_path.parent / f".{active_path.name}.restore"
+                _copy_file_atomically(backup_path, restore_path, active_path)
+                ensure_model_write_allowed(
+                    active_path,
+                    active_model_path=active_path,
+                    approved_promotion=True,
+                )
+                os.replace(restore_path, active_path)
+            raise
+
+
+def rollback_active_model(
+    active_model_path: Path = DEFAULT_MODEL_PATH,
+    *,
+    approved: bool = False,
+    approved_by: str = "",
+) -> Path:
+    """Restore the most recent saved active model after explicit approval."""
+    active_path = Path(active_model_path)
+    if not approved:
+        raise PermissionError("Rollback requires explicit human approval (approved=True or CLI --approve).")
+    if not approved_by.strip():
+        raise ValueError("approved_by must identify the human approving this rollback.")
+    ensure_model_write_allowed(
+        active_path,
+        active_model_path=active_path,
+        approved_promotion=True,
+    )
+    backups = sorted((active_path.parent / "rollback").glob("*.pkl"))
+    if not backups:
+        raise FileNotFoundError(f"No rollback model is available under {active_path.parent / 'rollback'}.")
+    if not active_path.is_file():
+        raise FileNotFoundError(f"Active model not found: {active_path}")
+
+    backup_path = backups[-1]
+    timestamp = datetime.now(timezone.utc).isoformat()
+    entry = {
+        "action": "rollback",
+        "approved_by": approved_by.strip(),
+        "candidate_version": backup_path.stem,
+        "timestamp": timestamp,
+        "metrics": {"restored_from": str(backup_path)},
+    }
+    previous_path = active_path.parent / "rollback" / (
+        f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')}_before_rollback.pkl"
+    )
+    log_path = active_path.parent / "promotion_log.jsonl"
+    with _MODEL_PROMOTION_LOCK:
+        previous_hash = _sha256_file(active_path)
+        _copy_file_atomically(active_path, previous_path, active_path)
+        try:
+            _copy_file_atomically(backup_path, active_path, active_path)
+            _append_promotion_log(log_path, entry)
+        except Exception:
+            if _sha256_file(active_path) != previous_hash:
+                restore_path = active_path.parent / f".{active_path.name}.restore"
+                _copy_file_atomically(previous_path, restore_path, active_path)
+                os.replace(restore_path, active_path)
+            raise
+    return backup_path
 
 
 def run_retraining_pipeline(threshold: int) -> dict[str, Any]:
@@ -727,11 +871,11 @@ def run_retraining_pipeline(threshold: int) -> dict[str, Any]:
         "total_corrections": total_count,
     }
 
-    if candidate_results["accuracy"] > live_results["accuracy"]:
-        promote_candidate_model(DEFAULT_MODEL_PATH, CANDIDATE_MODEL_PATH)
-        decision = "promote"
-    else:
-        decision = "refuse"
+    decision = (
+        "candidate_ready_for_review"
+        if candidate_results["accuracy"] > live_results["accuracy"]
+        else "candidate_not_better"
+    )
 
     evaluation_report["decision"] = decision
     try:
