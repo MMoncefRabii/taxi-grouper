@@ -1,7 +1,7 @@
 """
 FastAPI backend for Taxi Grouper - wraps existing grouping logic without modifications.
 
-Run with: uvicorn api:app --reload
+Run with: uvicorn src.api.service:app --reload
 """
 
 import json

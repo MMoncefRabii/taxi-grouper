@@ -113,7 +113,7 @@ The Streamlit app uses shared core grouping logic from `src.core`.
 The API backend is defined in `src/api/service.py`.
 
 ```bash
-uvicorn src.api.service:app --reload
+uvicorn api:app --reload
 ```
 
 Available endpoints include:
