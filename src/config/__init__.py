@@ -22,6 +22,18 @@ OUTPUTS_DIR = PROJECT_ROOT / "outputs"
 DEFAULT_MODEL_PATH = MODELS_DIR / "taxi_grouping_model.pkl"
 DEFAULT_CANDIDATE_MODEL_PATH = MODELS_DIR / "candidate" / DEFAULT_MODEL_PATH.name
 DEFAULT_CONFIG_PATH = MODELS_DIR / "config.json"
+DEFAULT_MAX_UPLOAD_SIZE_BYTES = 10 * 1024 * 1024
+
+
+def _configured_max_upload_size_bytes() -> int:
+    raw_value = os.getenv("MAX_UPLOAD_SIZE_BYTES", str(DEFAULT_MAX_UPLOAD_SIZE_BYTES))
+    try:
+        max_size = int(raw_value)
+    except ValueError as exc:
+        raise ValueError("MAX_UPLOAD_SIZE_BYTES must be a positive integer.") from exc
+    if max_size <= 0:
+        raise ValueError("MAX_UPLOAD_SIZE_BYTES must be a positive integer.")
+    return max_size
 
 
 ZONE_COMPATIBILITY: dict[str, list[str]] = {
@@ -63,6 +75,7 @@ class Settings:
     ])
     retrain_threshold: int = int(os.getenv("RETRAIN_THRESHOLD", "20"))
     model_promotion_enabled: bool = False
+    max_upload_size_bytes: int = field(default_factory=_configured_max_upload_size_bytes)
 
 
 def get_settings() -> Settings:
@@ -76,4 +89,5 @@ def get_settings() -> Settings:
     return Settings(
         allowed_origins=origins,
         model_promotion_enabled=model_promotion_enabled,
+        max_upload_size_bytes=_configured_max_upload_size_bytes(),
     )

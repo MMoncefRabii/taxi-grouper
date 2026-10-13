@@ -17,7 +17,7 @@ logging.basicConfig(level=logging.INFO)
 
 import pandas as pd
 from fastapi import BackgroundTasks, FastAPI, File, UploadFile, Query, HTTPException, Body
-from fastapi.responses import StreamingResponse, RedirectResponse
+from fastapi.responses import JSONResponse, StreamingResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -53,11 +53,88 @@ from src.data.training_data_manager import (
     _get_training_corrections_path,
 )
 
+class GroupUploadRequestTooLarge(Exception):
+    pass
+
+
+class GroupUploadSizeLimitMiddleware:
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or scope["method"] != "POST" or scope["path"] != "/api/group":
+            await self.app(scope, receive, send)
+            return
+
+        max_upload_size = get_settings().max_upload_size_bytes
+        max_request_size = max_upload_size + UPLOAD_MULTIPART_OVERHEAD_BYTES
+        headers = dict(scope.get("headers", []))
+        content_length = headers.get(b"content-length")
+        if content_length is not None:
+            try:
+                request_size = int(content_length)
+            except ValueError:
+                response = JSONResponse(status_code=400, content={"detail": "Invalid Content-Length header."})
+                await response(scope, receive, send)
+                return
+            if request_size < 0:
+                response = JSONResponse(status_code=400, content={"detail": "Invalid Content-Length header."})
+                await response(scope, receive, send)
+                return
+            if request_size > max_request_size:
+                await self._too_large_response(scope, receive, send, max_upload_size)
+                return
+
+        received_size = 0
+        request_too_large = False
+
+        async def limited_receive():
+            nonlocal received_size, request_too_large
+            message = await receive()
+            if message["type"] == "http.request":
+                received_size += len(message.get("body", b""))
+                if received_size > max_request_size:
+                    request_too_large = True
+                    raise GroupUploadRequestTooLarge
+            return message
+
+        async def limited_send(message):
+            if not request_too_large:
+                await send(message)
+
+        try:
+            await self.app(scope, limited_receive, limited_send)
+        except GroupUploadRequestTooLarge:
+            pass
+        if request_too_large:
+            await self._too_large_response(scope, receive, send, max_upload_size)
+
+    @staticmethod
+    async def _too_large_response(scope, receive, send, max_upload_size):
+        response = JSONResponse(
+            status_code=413,
+            content={
+                "detail": (
+                    "Uploaded request exceeds the maximum allowed file size of "
+                    f"{max_upload_size} bytes."
+                )
+            },
+        )
+        await response(scope, receive, send)
+
+
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 _retrain_lock = threading.Lock()
 _retrain_task_scheduled = False
+UPLOAD_CHUNK_SIZE = 64 * 1024
+UPLOAD_MULTIPART_OVERHEAD_BYTES = 64 * 1024
+_UPLOAD_SIGNATURES = {
+    ".xlsx": b"PK",
+    ".ods": b"PK",
+    ".xls": b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1",
+}
 
 class SheetInfoRequest(BaseModel):
     sheet_id: str
@@ -112,6 +189,7 @@ app = FastAPI(
     description="Backend API for taxi grouping optimization - Grand Tunis",
 )
 
+app.add_middleware(GroupUploadSizeLimitMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.allowed_origins,
@@ -586,14 +664,43 @@ async def group_agents_endpoint(
     - warnings: list of issues (e.g., low-confidence destinations)
     - validation: status and per-taxi validation reports
     """
-    temp_file = None
+    temp_file: Path | None = None
     try:
-        # Write uploaded file to temporary location (load_dispatch_excel requires a file path)
-        temp_handle = tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx")
-        temp_file = Path(temp_handle.name)
-        content = await file.read()
-        temp_handle.write(content)
-        temp_handle.close()
+        filename = file.filename or ""
+        extension = Path(filename).suffix.lower()
+        expected_signature = _UPLOAD_SIGNATURES.get(extension)
+        if expected_signature is None:
+            raise HTTPException(
+                status_code=415,
+                detail="Unsupported upload type. Use an .xlsx, .xls, or .ods workbook.",
+            )
+
+        max_upload_size = get_settings().max_upload_size_bytes
+        total_size = 0
+        signature = b""
+        with tempfile.NamedTemporaryFile(delete=False, suffix=extension) as temp_handle:
+            temp_file = Path(temp_handle.name)
+            while chunk := await file.read(UPLOAD_CHUNK_SIZE):
+                total_size += len(chunk)
+                if total_size > max_upload_size:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"Uploaded file exceeds the maximum allowed size of {max_upload_size} bytes.",
+                    )
+                if len(signature) < len(expected_signature):
+                    signature += chunk[: len(expected_signature) - len(signature)]
+                if len(signature) == len(expected_signature) and not signature.startswith(expected_signature):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Uploaded file does not have a valid {extension} file signature.",
+                    )
+                temp_handle.write(chunk)
+
+        if len(signature) < len(expected_signature) or not signature.startswith(expected_signature):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Uploaded file does not have a valid {extension} file signature.",
+            )
 
         # Load and parse Excel
         try:

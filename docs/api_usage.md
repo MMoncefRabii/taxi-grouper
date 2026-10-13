@@ -215,6 +215,9 @@ Request:
 - multipart form data
 - `file`: Excel file upload
 - optional query params: `time_filter`, `type_course_filter`, `operation_filter`, `use_ml`
+- `.xlsx`, `.xls`, and `.ods` files are supported and checked for a matching file signature.
+- Maximum workbook size: 10 MiB by default. Configure `MAX_UPLOAD_SIZE_BYTES` to change it.
+- Oversized uploads return HTTP 413; unsupported extensions return HTTP 415.
 
 Response:
 
