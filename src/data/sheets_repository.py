@@ -20,6 +20,7 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 
 from ..config import get_settings
+from ..core.preprocessing import add_dispatch_block_metadata, is_repeated_header_row, load_dispatch_excel
 
 SETTINGS = get_settings()
 DATA_DIR = Path(__file__).resolve().parents[1] / "data"
@@ -301,8 +302,29 @@ def _read_google_sheet_to_dataframe(sheet_id: str, sheet_title: str | None = Non
         raise RuntimeError("Spreadsheet must contain a header row and at least one data row.")
 
     headers = [str(value) for value in values[0]]
-    rows = [row + [""] * (len(headers) - len(row)) for row in values[1:]]
-    return pd.DataFrame(rows, columns=headers)
+    rows: list[list[str]] = []
+    block_ordinals: list[int] = []
+    block_ordinal = 1
+    for row in values[1:]:
+        if is_repeated_header_row(row):
+            block_ordinal += 1
+            continue
+        padded_row = row + [""] * (len(headers) - len(row))
+        if not any(str(value).strip() for value in padded_row):
+            continue
+        rows.append(padded_row)
+        block_ordinals.append(block_ordinal)
+
+    result = pd.DataFrame(rows, columns=headers)
+    sheet_gid = title_to_gid[sheet_title]
+    result["SourceSheet"] = str(sheet_gid)
+    result["BlockID"] = [f"{sheet_gid}_{ordinal - 1}" for ordinal in block_ordinals]
+    return add_dispatch_block_metadata(
+        result,
+        source_id=sheet_id,
+        sheet_name=str(sheet_gid),
+        block_ordinals=block_ordinals,
+    )
 
 
 def read_sheet_to_dataframe(sheet_id: str, sheet_title: str | None = None) -> pd.DataFrame:
@@ -990,10 +1012,13 @@ def _download_file(file_id: str, dest_path: str) -> None:
             status, done = downloader.next_chunk()
 
 
-def _excel_to_dataframe(file_path: str) -> pd.DataFrame:
+def _excel_to_dataframe(file_path: str, source_id: str | None = None) -> pd.DataFrame:
     """Convert an Excel file to a pandas DataFrame."""
-    df = pd.read_excel(file_path, sheet_name=0)
-    return df
+    return load_dispatch_excel(
+        file_path,
+        read_all_sheets=False,
+        source_id=source_id or Path(file_path).name,
+    )
 
 
 def read_from_drive_file(file_id: str, sheet_title: str | None = None) -> pd.DataFrame:
@@ -1018,10 +1043,7 @@ def read_from_drive_file(file_id: str, sheet_title: str | None = None) -> pd.Dat
         with tempfile.TemporaryDirectory() as tmpdir:
             temp_file = Path(tmpdir) / filename
             _download_file(file_id, str(temp_file))
-            df = _excel_to_dataframe(str(temp_file))
-            # Ensure columns are strings and first row becomes headers if needed
-            df.columns = [str(col) for col in df.columns]
-            return df
+            return _excel_to_dataframe(str(temp_file), source_id=filename)
     
     raise ValueError(f"Unsupported file type: {mime_type}. Please use a Google Sheet or Excel file.")
 

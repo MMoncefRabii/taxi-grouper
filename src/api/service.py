@@ -597,7 +597,7 @@ async def group_agents_endpoint(
 
         # Load and parse Excel
         try:
-            df = load_dispatch_excel(str(temp_file))
+            df = load_dispatch_excel(str(temp_file), source_id=file.filename or temp_file.name)
             if df.empty:
                 raise HTTPException(status_code=400, detail="Uploaded file is empty or has no valid rows")
         except Exception as e:

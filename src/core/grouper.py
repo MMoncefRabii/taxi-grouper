@@ -60,6 +60,8 @@ def enrich_zones(df: pd.DataFrame, address_col: str) -> pd.DataFrame:
         result["SourceSheet"] = ""
     if "BlockID" not in result.columns:
         result["BlockID"] = ""
+    if "UnassignedReason" not in result.columns:
+        result["UnassignedReason"] = ""
     return result
 
 
@@ -85,10 +87,29 @@ def group_agents(
     columns = detect_columns(clean_input)
     result = enrich_zones(clean_input, columns.address)
     result["_original_order"] = range(len(result))
+    result["UnassignedReason"] = ""
     if "Taxi" in result.columns:
         result["_InputTaxi"] = result["Taxi"]
         result["Taxi"] = ""
     result[config.taxi_column] = pd.NA  # Initialize as NA (numeric-compatible) instead of empty string
+    date_col = _find_existing_col(result, ["Date"])
+    if date_col is None:
+        date_values = pd.Series(pd.NaT, index=result.index, dtype="datetime64[ns]")
+    else:
+        date_values = pd.to_datetime(result[date_col], errors="coerce")
+    result["_DispatchDateKey"] = date_values.dt.strftime("%Y-%m-%d")
+    dispatch_id_col = _find_source_dispatch_id_column(result)
+    if dispatch_id_col is None:
+        dispatch_ids = pd.Series(None, index=result.index, dtype=object)
+    else:
+        dispatch_ids = result[dispatch_id_col].map(_clean_source_dispatch_id)
+    result["_SourceDispatchIDKey"] = dispatch_ids
+    invalid_dates = result["_DispatchDateKey"].isna()
+    invalid_dispatch_ids = result["_SourceDispatchIDKey"].isna()
+    result.loc[invalid_dates, "GroupReason"] = "MISSING_DATE"
+    result.loc[invalid_dates, "UnassignedReason"] = "MISSING_DATE"
+    result.loc[~invalid_dates & invalid_dispatch_ids, "GroupReason"] = "MISSING_DISPATCH_ID"
+    result.loc[~invalid_dates & invalid_dispatch_ids, "UnassignedReason"] = "MISSING_DISPATCH_ID"
     warnings: list[str] = []
 
     model = load_model(config.model_path) if use_ml else None
@@ -101,9 +122,10 @@ def group_agents(
         warnings.append(f"{clean_validation['needs_manual_validation']} low-confidence destinations need manual validation.")
 
     all_groups: list[dict[str, Any]] = []
-    assigned: set[int] = set()
+    assigned: set[int] = set(result.index[invalid_dates | invalid_dispatch_ids])
 
-    for _block_key, block_indices in _iter_dispatch_blocks(result, columns):
+    groupable = result.loc[~(invalid_dates | invalid_dispatch_ids)]
+    for _block_key, block_indices in _iter_dispatch_blocks(groupable, columns):
         groups = _group_block(result, block_indices, columns, model, capacity)
         _apply_dispatch_preferences(result, groups, capacity)
         for group in groups:
@@ -129,6 +151,7 @@ def group_agents(
         result.loc[indices, "GroupReason"] = str(group["reason"])
         result.loc[indices, "RuleUsed"] = str(group["rule"])
 
+    result = result.drop(columns=["_DispatchDateKey", "_SourceDispatchIDKey"])
     result = result.sort_values([config.taxi_column, "_original_order"], kind="stable").drop(columns=["_original_order"]).reset_index(drop=True)
     validation = validate_dispatch(result, taxi_column=config.taxi_column, capacity=capacity)
     if validation["errors"]:
@@ -244,6 +267,8 @@ def _iter_dispatch_blocks(df: pd.DataFrame, columns: ColumnMap) -> list[tuple[tu
 
 def _block_columns(df: pd.DataFrame, columns: ColumnMap) -> list[str]:
     candidates = [
+        "_DispatchDateKey",
+        "_SourceDispatchIDKey",
         columns.time,
         columns.type_course,
         "Dispatch Type",
@@ -259,6 +284,28 @@ def _block_columns(df: pd.DataFrame, columns: ColumnMap) -> list[str]:
             seen.add(col)
             block_cols.append(col)
     return block_cols
+
+
+def _find_source_dispatch_id_column(df: pd.DataFrame) -> str | None:
+    aliases = {
+        "dispatchid",
+        "sourcedispatchid",
+        "iddispatch",
+        "dispatchnumber",
+        "dispatchno",
+    }
+    for column in df.columns:
+        normalized = "".join(character.lower() for character in str(column) if character.isalnum())
+        if normalized in aliases:
+            return column
+    return None
+
+
+def _clean_source_dispatch_id(value: object) -> str | None:
+    if pd.isna(value):
+        return None
+    cleaned = str(value).strip()
+    return cleaned or None
 
 
 def _drop_empty_agent_rows(df: pd.DataFrame) -> pd.DataFrame:
@@ -671,6 +718,22 @@ def validate_dispatch(df: pd.DataFrame, taxi_column: str = TAXI_COLUMN, capacity
     for taxi, group in result.groupby(taxi_column, sort=False, dropna=False):
         taxi_errors: list[str] = []
         taxi_warnings: list[str] = []
+        date_col = _find_existing_col(group, ["Date"])
+        if date_col is not None:
+            parsed_dates = pd.to_datetime(group[date_col], errors="coerce")
+            if parsed_dates.isna().any():
+                taxi_errors.append("contains missing or invalid date")
+            dates = sorted(parsed_dates.dropna().dt.strftime("%Y-%m-%d").unique().tolist())
+            if len(dates) > 1:
+                taxi_errors.append(f"contains multiple dates: {', '.join(dates)}")
+        dispatch_id_col = _find_source_dispatch_id_column(group)
+        if dispatch_id_col is not None:
+            dispatch_ids = group[dispatch_id_col].map(_clean_source_dispatch_id)
+            if dispatch_ids.isna().any():
+                taxi_errors.append("contains missing source dispatch id")
+            source_ids = sorted(dispatch_ids.dropna().unique().tolist())
+            if len(source_ids) > 1:
+                taxi_errors.append(f"contains multiple source dispatch ids: {', '.join(source_ids)}")
         zones = sorted(str(z) for z in group.get("Zone", pd.Series(dtype=str)).dropna().unique())
         destinations = sorted(str(z) for z in group.get("DetectedDestination", pd.Series(dtype=str)).dropna().unique())
         times = sorted(str(z) for z in _series_for_candidates(group, ["Heure d'arrivée", "Heure d'arrivee", "Heure", "Heure de départ"]).dropna().unique())

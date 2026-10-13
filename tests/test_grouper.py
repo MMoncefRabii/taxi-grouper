@@ -1,7 +1,17 @@
 import pandas as pd
 
-from src.core.grouper import group_agents, validate_groups
+from src.core.grouper import group_agents as _group_agents, validate_dispatch, validate_groups
 from src.core.preprocessing import detect_columns
+
+
+def group_agents(df, columns=None, **kwargs):
+    """Keep existing rule tests on one valid dispatch block."""
+    df = df.copy()
+    if "Date" not in df.columns:
+        df["Date"] = "2026-05-28"
+    if "SourceDispatchID" not in df.columns:
+        df["SourceDispatchID"] = "legacy.xlsx | Sheet1 | 1"
+    return _group_agents(df, columns=columns or detect_columns(df), **kwargs)
 
 
 def test_grouping_never_exceeds_four():
@@ -15,6 +25,113 @@ def test_grouping_never_exceeds_four():
     grouped, _warnings = group_agents(df, detect_columns(df), use_ml=False)
     validate_groups(grouped)
     assert grouped.groupby("Groupe Taxi").size().max() <= 4
+
+
+def test_same_time_and_course_on_different_dates_never_share_a_taxi():
+    df = pd.DataFrame(
+        {
+            "Date": ["2026-05-28"] * 2 + ["2026-05-29"] * 2,
+            "SourceDispatchID": ["dispatch-A"] * 4,
+            "Nom": ["A1", "A2", "B1", "B2"],
+            "Adresse": ["Ariana"] * 4,
+            "Heure": ["07:00"] * 4,
+            "Type de course": ["Ramassage"] * 4,
+        }
+    )
+
+    grouped, _warnings = _group_agents(df, detect_columns(df), use_ml=False)
+    taxis_by_date = grouped.groupby("Date")["Groupe Taxi"].apply(set)
+
+    assert taxis_by_date["2026-05-28"].isdisjoint(taxis_by_date["2026-05-29"])
+
+
+def test_same_date_time_and_course_with_different_dispatch_ids_never_share_a_taxi():
+    df = pd.DataFrame(
+        {
+            "Date": ["2026-05-28"] * 4,
+            "SourceDispatchID": ["dispatch-A"] * 2 + ["dispatch-B"] * 2,
+            "Nom": ["A1", "A2", "B1", "B2"],
+            "Adresse": ["Ariana"] * 4,
+            "Heure": ["07:00"] * 4,
+            "Type de course": ["Ramassage"] * 4,
+        }
+    )
+
+    grouped, _warnings = _group_agents(df, detect_columns(df), use_ml=False)
+    taxis_by_dispatch = grouped.groupby("SourceDispatchID")["Groupe Taxi"].apply(set)
+
+    assert taxis_by_dispatch["dispatch-A"].isdisjoint(taxis_by_dispatch["dispatch-B"])
+
+
+def test_validate_dispatch_rejects_external_taxi_with_multiple_dates():
+    df = pd.DataFrame(
+        {
+            "Date": ["2026-05-28", "2026-05-29"],
+            "SourceDispatchID": ["dispatch-A"] * 2,
+            "Groupe Taxi": [1, 1],
+            "Adresse": ["Ariana"] * 2,
+            "Zone": ["A"] * 2,
+            "DetectedDestination": ["Ariana"] * 2,
+        }
+    )
+
+    validation = validate_dispatch(df)
+
+    assert not validation["valid"]
+    assert any("multiple dates" in error.lower() for error in validation["errors"])
+
+
+def test_validate_dispatch_rejects_external_taxi_with_multiple_source_blocks():
+    df = pd.DataFrame(
+        {
+            "Date": ["2026-05-28"] * 2,
+            "SourceDispatchID": ["dispatch-A", "dispatch-B"],
+            "Groupe Taxi": [1, 1],
+            "Adresse": ["Ariana"] * 2,
+            "Zone": ["A"] * 2,
+            "DetectedDestination": ["Ariana"] * 2,
+        }
+    )
+
+    validation = validate_dispatch(df)
+
+    assert not validation["valid"]
+    assert any("multiple source dispatch ids" in error.lower() for error in validation["errors"])
+
+
+def test_missing_or_unparseable_date_and_missing_dispatch_id_are_unassigned():
+    df = pd.DataFrame(
+        {
+            "Date": [None, "not-a-date", "2026-05-28"],
+            "SourceDispatchID": ["dispatch-A", "dispatch-A", None],
+            "Nom": ["Missing date", "Invalid date", "Missing dispatch"],
+            "Adresse": ["Ariana"] * 3,
+            "Heure": ["07:00"] * 3,
+        }
+    )
+
+    grouped, _warnings = _group_agents(df, detect_columns(df), use_ml=False)
+
+    assert grouped["Groupe Taxi"].isna().all()
+    assert grouped["UnassignedReason"].tolist() == ["MISSING_DATE", "MISSING_DATE", "MISSING_DISPATCH_ID"]
+
+
+def test_same_dispatch_block_still_groups_normally():
+    df = pd.DataFrame(
+        {
+            "Date": ["2026-05-28"] * 4,
+            "SourceDispatchID": ["dispatch-A"] * 4,
+            "Nom": [f"Agent {i}" for i in range(4)],
+            "Adresse": ["Ariana"] * 4,
+            "Heure": ["07:00"] * 4,
+            "Type de course": ["Ramassage"] * 4,
+        }
+    )
+
+    grouped, _warnings = _group_agents(df, detect_columns(df), use_ml=False)
+
+    assert grouped["Groupe Taxi"].nunique() == 1
+    assert grouped["UnassignedReason"].eq("").all()
 
 
 def test_unknown_not_mixed_with_known():
