@@ -272,6 +272,20 @@ To run a single file:
 pytest tests/test_grouper.py
 ```
 
+### Reproducible test environment (Windows)
+
+With Python 3.13.5 registered with the Python launcher, create a fresh
+environment and install the fully pinned test dependencies:
+
+```powershell
+py -3.13 -m venv .venv-test
+.\.venv-test\Scripts\python.exe --version
+.\.venv-test\Scripts\python.exe -m pip install -r requirements-test.lock
+.\.venv-test\Scripts\python.exe -m pytest
+```
+
+The version check should report Python 3.13.5. `.venv-test` is ignored by Git.
+
 ---
 
 ## Architecture
