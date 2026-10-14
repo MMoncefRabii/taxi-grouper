@@ -145,6 +145,9 @@ class SheetInfoRequest(BaseModel):
 class SaveToDriveRequest(BaseModel):
     grouped_data: list[dict]
     sheet_name: str | None = None
+    client_sheet_id: str | None = None
+    internal_sheet_id: str | None = None
+    overwrite_output: bool = False
 
 settings = get_settings()
 
@@ -264,11 +267,23 @@ async def group_sheet_endpoint(
     type_course_filter: str | None = Body(None, description="Optional course type ('Ramassage' or 'Retour')"),
     operation_filter: str | None = Body(None, description="Optional client/operation filter"),
     use_ml: bool = Body(True, description="Use ML-assisted ordering (default True)"),
+    client_sheet_id: str | None = Body(None, description="Existing client output ID for explicit overwrite"),
+    internal_sheet_id: str | None = Body(None, description="Existing internal output ID for explicit overwrite"),
+    overwrite_output: bool = Body(False, description="Overwrite the explicitly supplied output spreadsheets"),
 ):
-    """Group agents from a Google Sheet and write results into a results worksheet."""
+    """Group a source sheet and write results to separate client and internal spreadsheets."""
     if not sheet_id:
         raise HTTPException(status_code=400, detail="sheet_id is required")
+    output_ids_provided = client_sheet_id is not None or internal_sheet_id is not None
+    if output_ids_provided and (not client_sheet_id or not internal_sheet_id):
+        raise HTTPException(status_code=400, detail="Both output spreadsheet IDs are required for overwrite.")
+    if output_ids_provided != overwrite_output:
+        raise HTTPException(
+            status_code=400,
+            detail="Explicit output spreadsheet IDs and overwrite_output=true must be provided together.",
+        )
 
+    original_source_id = sheet_id
     converted_from_office_file = False
     converted_sheet_url = None
     try:
@@ -309,13 +324,30 @@ async def group_sheet_endpoint(
     grouped, warnings = group_agents(df_filtered, columns=columns, use_ml=use_ml)
     validation = validate_dispatch(grouped, taxi_column=TAXI_COLUMN, capacity=MAX_TAXI_CAPACITY)
 
+    source_sheet_ids = {original_source_id, sheet_id}
+    if client_sheet_id and internal_sheet_id:
+        if client_sheet_id == internal_sheet_id:
+            raise HTTPException(status_code=400, detail="Client and internal outputs must be different spreadsheets.")
+        if client_sheet_id in source_sheet_ids or internal_sheet_id in source_sheet_ids:
+            raise HTTPException(
+                status_code=400,
+                detail="Output spreadsheet IDs must not match the source or its converted copy.",
+            )
+
     try:
-        sheet_url = write_grouped_df_to_sheet(sheet_id, grouped)
+        outputs = write_grouped_df_to_sheet(
+            sheet_id,
+            grouped,
+            source_sheet_ids=source_sheet_ids,
+            client_sheet_id=client_sheet_id,
+            internal_sheet_id=internal_sheet_id,
+            overwrite=overwrite_output,
+        )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to write grouped results to Google Sheet: {str(exc)}")
 
     # Store pre-correction state so we can diff corrections later
-    store_pre_correction_state(sheet_id, grouped)
+    store_pre_correction_state(outputs.client_sheet_id, grouped)
 
     grouped_json = json.loads(grouped.to_json(orient="records", date_format="iso"))
     stats = {
@@ -325,7 +357,12 @@ async def group_sheet_endpoint(
     }
 
     response = {
-        "sheet_url": sheet_url,
+        "sheet_url": outputs.client_sheet_url,
+        "sheet_id": outputs.client_sheet_id,
+        "client_sheet_url": outputs.client_sheet_url,
+        "internal_sheet_url": outputs.internal_sheet_url,
+        "client_sheet_id": outputs.client_sheet_id,
+        "internal_sheet_id": outputs.internal_sheet_id,
         "grouped_data": grouped_json,
         "stats": stats,
         "warnings": warnings,
@@ -621,9 +658,19 @@ async def debug_training_cache():
 
 @app.post("/api/save-drive")
 async def save_drive_endpoint(request: SaveToDriveRequest):
-    """Save grouped results directly to Google Drive as a new Google Sheet."""
+    """Save grouped results to separate client and internal spreadsheets."""
     if not request.grouped_data:
         raise HTTPException(status_code=400, detail="grouped_data must not be empty")
+    output_ids_provided = request.client_sheet_id is not None or request.internal_sheet_id is not None
+    if output_ids_provided and (not request.client_sheet_id or not request.internal_sheet_id):
+        raise HTTPException(status_code=400, detail="Both output spreadsheet IDs are required for overwrite.")
+    if output_ids_provided != request.overwrite_output:
+        raise HTTPException(
+            status_code=400,
+            detail="Explicit output spreadsheet IDs and overwrite_output=true must be provided together.",
+        )
+    if request.client_sheet_id == request.internal_sheet_id and output_ids_provided:
+        raise HTTPException(status_code=400, detail="Client and internal outputs must be different spreadsheets.")
 
     try:
         df = pd.DataFrame(request.grouped_data)
@@ -634,11 +681,24 @@ async def save_drive_endpoint(request: SaveToDriveRequest):
 
     try:
         sheet_name = request.sheet_name or "Taxi Grouper Export"
-        sheet_id, sheet_url = create_google_sheet_from_dataframe(df, title=sheet_name)
+        outputs = create_google_sheet_from_dataframe(
+            df,
+            title=sheet_name,
+            client_sheet_id=request.client_sheet_id,
+            internal_sheet_id=request.internal_sheet_id,
+            overwrite=request.overwrite_output,
+        )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to save grouped results to Drive: {str(exc)}")
 
-    return {"sheet_url": sheet_url, "sheet_id": sheet_id}
+    return {
+        "sheet_url": outputs.client_sheet_url,
+        "sheet_id": outputs.client_sheet_id,
+        "client_sheet_url": outputs.client_sheet_url,
+        "internal_sheet_url": outputs.internal_sheet_url,
+        "client_sheet_id": outputs.client_sheet_id,
+        "internal_sheet_id": outputs.internal_sheet_id,
+    }
 
 
 @app.post("/api/group")

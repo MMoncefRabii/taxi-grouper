@@ -148,7 +148,11 @@ Response:
 
 ### `POST /api/group-sheet`
 
-Groups agents from an existing Google Sheet and writes results back to that sheet.
+Reads and groups the selected source spreadsheet, then writes client-facing and
+internal results to two separate spreadsheets in the configured output folder.
+Neither the source nor an Office-converted input copy is used as an output.
+Set `GOOGLE_OUTPUT_FOLDER_ID` to a writable folder ID; there is no default to
+the source's parent. The app does not automatically share either output.
 
 Request body:
 
@@ -158,15 +162,29 @@ Request body:
   "time_filter": "07:00",
   "type_course_filter": "Ramassage",
   "operation_filter": "Client A",
-  "use_ml": true
+  "use_ml": true,
+  "client_sheet_id": null,
+  "internal_sheet_id": null,
+  "overwrite_output": false
 }
 ```
+
+Each run creates new output spreadsheets by default. To overwrite, provide both
+existing output IDs and set `overwrite_output` to `true`; the IDs must be
+distinct, must not match the source or converted input, and each target must
+contain only its expected output tab. Files are never matched or reused by
+title.
 
 Response:
 
 ```json
 {
-  "sheet_url": "https://docs.google.com/spreadsheets/d/.../edit",
+  "sheet_url": "https://docs.google.com/spreadsheets/d/<client-id>/edit#gid=...",
+  "sheet_id": "<client-output-id>",
+  "client_sheet_url": "https://docs.google.com/spreadsheets/d/<client-id>/edit#gid=...",
+  "internal_sheet_url": "https://docs.google.com/spreadsheets/d/<internal-id>/edit#gid=...",
+  "client_sheet_id": "<client-output-id>",
+  "internal_sheet_id": "<internal-output-id>",
   "grouped_data": [ ... ],
   "stats": { "total_agents": 25, "total_taxis": 7, "unknown_count": 0 },
   "warnings": [],
@@ -181,9 +199,20 @@ Response:
 }
 ```
 
+`sheet_url` and `sheet_id` remain compatibility aliases for the client output.
+Use `sheet_id` from the grouping request as the source for future grouping runs.
+Use `client_sheet_id` as the `sheet_id` when validating manual corrections;
+the internal spreadsheet is not the correction-validation input.
+
+The client spreadsheet contains one `Taxi Grouper Client Output` tab with only
+the approved client columns. The separate internal spreadsheet contains one
+`Taxi Grouper Internal` tab with all grouped-data columns.
+
 ### `POST /api/validate-sheet`
 
-Validates the current client-facing results sheet after manual corrections.
+Validates the client output spreadsheet after manual corrections. Pass
+`client_sheet_id` from `/api/group-sheet` as `sheet_id`; the original source ID
+is not the correction-validation target.
 It also extracts correction training examples and may schedule candidate
 retraining. Automatic retraining does not replace the active model; promoting a
 candidate requires the separately documented human-approved promotion command.
@@ -218,14 +247,20 @@ Response:
 
 ### `POST /api/save-drive`
 
-Saves grouped JSON results as a new Google Sheet in Drive.
+Saves grouped JSON results as distinct client and internal spreadsheets in the
+configured output folder. It follows the same no-overwrite-by-default policy as
+`/api/group-sheet`; explicit overwrite requires both output IDs and
+`overwrite_output: true`.
 
 Request body:
 
 ```json
 {
   "grouped_data": [ ... ],
-  "sheet_name": "Taxi Grouper Results"
+  "sheet_name": "Taxi Grouper Results",
+  "client_sheet_id": null,
+  "internal_sheet_id": null,
+  "overwrite_output": false
 }
 ```
 
@@ -233,8 +268,12 @@ Response:
 
 ```json
 {
-  "sheet_url": "https://docs.google.com/spreadsheets/d/.../edit",
-  "sheet_id": "<new-sheet-id>"
+  "sheet_url": "https://docs.google.com/spreadsheets/d/<client-id>/edit#gid=...",
+  "sheet_id": "<client-output-id>",
+  "client_sheet_url": "https://docs.google.com/spreadsheets/d/<client-id>/edit#gid=...",
+  "internal_sheet_url": "https://docs.google.com/spreadsheets/d/<internal-id>/edit#gid=...",
+  "client_sheet_id": "<client-output-id>",
+  "internal_sheet_id": "<internal-output-id>"
 }
 ```
 

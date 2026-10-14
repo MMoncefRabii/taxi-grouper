@@ -65,6 +65,7 @@ class Settings:
     google_client_id: str | None = os.getenv("GOOGLE_CLIENT_ID")
     google_client_secret: str | None = os.getenv("GOOGLE_CLIENT_SECRET")
     google_api_key: str | None = os.getenv("GOOGLE_API_KEY")
+    google_output_folder_id: str | None = os.getenv("GOOGLE_OUTPUT_FOLDER_ID")
     google_oauth_redirect_uri: str = os.getenv("GOOGLE_OAUTH_REDIRECT_URI", "http://localhost:8000/auth/callback")
     frontend_origin: str = os.getenv("FRONTEND_ORIGIN", "http://localhost:5173")
     allowed_origins: list[str] = field(default_factory=list)
