@@ -50,17 +50,13 @@ print("=" * 70)
 print("\nSample data to write to Google Sheet:")
 print(df[["Matricule", "Nom - Prénom", "Groupe Taxi", "Adresse"]].to_string())
 
-# This is the spreadsheet ID where test data will be written
-# You need to use an actual Google Sheet ID that you have access to
-SPREADSHEET_ID = "1O5K9a7d5l4KI11ntGzypTqD5cji6ny3RwThPM0S9wvI"
-
-print(f"\nWriting to spreadsheet: {SPREADSHEET_ID}")
-print("(The backend will apply sequential colors to the 'Cliente' sheet)")
+print("\nCreating separate client and internal output spreadsheets.")
 
 try:
-    result_url = write_grouped_df_to_sheet(SPREADSHEET_ID, df)
+    outputs = write_grouped_df_to_sheet(df, source_name="Backend Color Test")
     print("\n✓ SUCCESS: Data written to Google Sheet!")
-    print(f"Sheet URL: {result_url}")
+    print(f"Client sheet URL: {outputs.client_sheet_url}")
+    print(f"Internal sheet URL: {outputs.internal_sheet_url}")
     print("\nNEXT STEPS:")
     print("1. Open the URL above in your browser")
     print("2. Click on the 'Cliente' (client-facing) sheet tab")

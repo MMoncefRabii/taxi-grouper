@@ -335,10 +335,10 @@ async def group_sheet_endpoint(
             )
 
     try:
+        source_metadata = get_file_metadata(original_source_id)
         outputs = write_grouped_df_to_sheet(
-            sheet_id,
             grouped,
-            source_sheet_ids=source_sheet_ids,
+            source_name=source_metadata.get("name", "Taxi Grouper"),
             client_sheet_id=client_sheet_id,
             internal_sheet_id=internal_sheet_id,
             overwrite=overwrite_output,

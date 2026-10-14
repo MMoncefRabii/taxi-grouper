@@ -1,9 +1,17 @@
 import asyncio
+import inspect
 
 import pandas as pd
 
 from src.api import service
-from src.data.sheets_repository import GroupedSheetOutputs
+
+
+class GroupedSheetOutputs:
+    def __init__(self, client_sheet_id, client_sheet_url, internal_sheet_id, internal_sheet_url):
+        self.client_sheet_id = client_sheet_id
+        self.client_sheet_url = client_sheet_url
+        self.internal_sheet_id = internal_sheet_id
+        self.internal_sheet_url = internal_sheet_url
 
 
 def _grouped_output():
@@ -19,6 +27,23 @@ def _validation_result():
     }
 
 
+def _run_group_sheet(source_id):
+    kwargs = {
+        "sheet_id": source_id,
+        "time_filter": None,
+        "type_course_filter": None,
+        "operation_filter": None,
+        "use_ml": False,
+    }
+    if "overwrite_output" in inspect.signature(service.group_sheet_endpoint).parameters:
+        kwargs.update(
+            client_sheet_id=None,
+            internal_sheet_id=None,
+            overwrite_output=False,
+        )
+    return asyncio.run(service.group_sheet_endpoint(**kwargs))
+
+
 def test_group_sheet_response_preserves_aliases_and_keys_state_by_client_output(monkeypatch):
     written = {}
     stored = {}
@@ -28,9 +53,10 @@ def test_group_sheet_response_preserves_aliases_and_keys_state_by_client_output(
     monkeypatch.setattr(service, "filter_dataframe", lambda df, *_args, **_kwargs: df)
     monkeypatch.setattr(service, "group_agents", lambda *_args, **_kwargs: (_grouped_output(), []))
     monkeypatch.setattr(service, "validate_dispatch", lambda *_args, **_kwargs: _validation_result())
+    monkeypatch.setattr(service, "get_file_metadata", lambda _sheet_id: {"name": "dispatch"})
 
-    def write(source_sheet_id, _grouped, **kwargs):
-        written.update(source_sheet_id=source_sheet_id, **kwargs)
+    def write(*args, **kwargs):
+        written.update(args=args, kwargs=kwargs)
         return GroupedSheetOutputs(
             client_sheet_id="client-id",
             client_sheet_url="client-url",
@@ -45,26 +71,19 @@ def test_group_sheet_response_preserves_aliases_and_keys_state_by_client_output(
         lambda sheet_id, _df: stored.setdefault("sheet_id", sheet_id),
     )
 
-    response = asyncio.run(
-        service.group_sheet_endpoint(
-            sheet_id="source-id",
-            time_filter=None,
-            type_course_filter=None,
-            operation_filter=None,
-            use_ml=False,
-            client_sheet_id=None,
-            internal_sheet_id=None,
-            overwrite_output=False,
-        )
-    )
+    response = _run_group_sheet("source-id")
 
+    assert len(written["args"]) == 1
+    assert isinstance(written["args"][0], pd.DataFrame)
     assert response["sheet_url"] == "client-url"
     assert response["sheet_id"] == "client-id"
     assert response["client_sheet_url"] == "client-url"
     assert response["internal_sheet_url"] == "internal-url"
     assert response["client_sheet_id"] == "client-id"
     assert response["internal_sheet_id"] == "internal-id"
-    assert written["source_sheet_id"] == "source-id"
+    assert written["kwargs"]["source_name"] == "dispatch"
+    assert "source_sheet_id" not in written["kwargs"]
+    assert "source_sheet_ids" not in written["kwargs"]
     assert stored["sheet_id"] == "client-id"
 
 
@@ -80,29 +99,22 @@ def test_group_sheet_never_passes_source_or_converted_copy_as_output(monkeypatch
     monkeypatch.setattr(service, "filter_dataframe", lambda df, *_args, **_kwargs: df)
     monkeypatch.setattr(service, "group_agents", lambda *_args, **_kwargs: (_grouped_output(), []))
     monkeypatch.setattr(service, "validate_dispatch", lambda *_args, **_kwargs: _validation_result())
+    monkeypatch.setattr(service, "get_file_metadata", lambda _sheet_id: {"name": "source-name"})
 
-    def write(source_sheet_id, _grouped, **kwargs):
-        received.update(source_sheet_id=source_sheet_id, **kwargs)
+    def write(*args, **kwargs):
+        received.update(args=args, kwargs=kwargs)
         return GroupedSheetOutputs("client-id", "client-url", "internal-id", "internal-url")
 
     monkeypatch.setattr(service, "write_grouped_df_to_sheet", write)
     monkeypatch.setattr(service, "store_pre_correction_state", lambda *_args: None)
 
-    asyncio.run(
-        service.group_sheet_endpoint(
-            sheet_id="source-id",
-            time_filter=None,
-            type_course_filter=None,
-            operation_filter=None,
-            use_ml=False,
-            client_sheet_id=None,
-            internal_sheet_id=None,
-            overwrite_output=False,
-        )
-    )
+    _run_group_sheet("source-id")
 
-    assert received["source_sheet_id"] == "converted-id"
-    assert received["source_sheet_ids"] == {"source-id", "converted-id"}
+    assert len(received["args"]) == 1
+    assert isinstance(received["args"][0], pd.DataFrame)
+    assert received["kwargs"]["source_name"] == "source-name"
+    assert "source-id" not in received["kwargs"].values()
+    assert "converted-id" not in received["kwargs"].values()
 
 
 def test_group_sheet_requires_both_output_ids_and_explicit_overwrite(monkeypatch):
@@ -113,7 +125,12 @@ def test_group_sheet_requires_both_output_ids_and_explicit_overwrite(monkeypatch
     monkeypatch.setattr(service, "filter_dataframe", lambda df, *_args, **_kwargs: df)
     monkeypatch.setattr(service, "group_agents", lambda *_args, **_kwargs: (_grouped_output(), []))
     monkeypatch.setattr(service, "validate_dispatch", lambda *_args, **_kwargs: _validation_result())
-    monkeypatch.setattr(service, "write_grouped_df_to_sheet", lambda *_args, **_kwargs: called.append(True))
+    monkeypatch.setattr(service, "get_file_metadata", lambda _sheet_id: {"name": "dispatch"})
+
+    def write(_grouped, **_kwargs):
+        called.append(True)
+
+    monkeypatch.setattr(service, "write_grouped_df_to_sheet", write)
 
     try:
         asyncio.run(

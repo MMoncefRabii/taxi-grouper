@@ -365,11 +365,9 @@ def _forward_fill_grouped_taxi_column(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def write_grouped_df_to_sheet(
-    source_sheet_id: str | None,
     grouped_df: pd.DataFrame,
     *,
-    source_name: str | None = None,
-    source_sheet_ids: set[str] | None = None,
+    source_name: str = "Taxi Grouper",
     client_sheet_id: str | None = None,
     internal_sheet_id: str | None = None,
     overwrite: bool = False,
@@ -380,24 +378,10 @@ def write_grouped_df_to_sheet(
         raise ValueError("Both client and internal output spreadsheet IDs are required.")
     if output_ids_provided != overwrite:
         raise ValueError("Explicit output spreadsheet IDs and overwrite=True must be provided together.")
-    if overwrite and not output_ids_provided:
-        raise ValueError("Explicit output spreadsheet IDs are required when overwrite=True.")
 
-    forbidden_ids = set(source_sheet_ids or ())
-    if source_sheet_id:
-        forbidden_ids.add(source_sheet_id)
     if client_sheet_id and internal_sheet_id:
         if client_sheet_id == internal_sheet_id:
             raise ValueError("Client and internal outputs must use different spreadsheets.")
-        if client_sheet_id in forbidden_ids or internal_sheet_id in forbidden_ids:
-            raise ValueError("Output spreadsheet IDs must not match the source or its converted copy.")
-
-    if source_name is None:
-        source_name = (
-            _get_file_metadata(source_sheet_id).get("name", "Taxi Grouper")
-            if source_sheet_id
-            else "Taxi Grouper"
-        )
     output_folder_id = OUTPUT_FOLDER_ID
     run_id = uuid.uuid4().hex[:12]
 
@@ -412,8 +396,8 @@ def write_grouped_df_to_sheet(
         client_id, _ = _create_google_sheet(client_title, output_folder_id)
         internal_id, _ = _create_google_sheet(internal_title, output_folder_id)
 
-    if client_id == internal_id or client_id in forbidden_ids or internal_id in forbidden_ids:
-        raise RuntimeError("Output spreadsheet IDs must be distinct from each other and from all source IDs.")
+    if client_id == internal_id:
+        raise RuntimeError("Client and internal outputs must use different spreadsheets.")
 
     client_gid = _ensure_output_tab(client_id, CLIENT_SHEET_NAME, newly_created=not overwrite)
     internal_gid = _ensure_output_tab(internal_id, INTERNAL_SHEET_NAME, newly_created=not overwrite)
@@ -1051,7 +1035,6 @@ def create_google_sheet_from_dataframe(
 ) -> GroupedSheetOutputs:
     """Write a DataFrame to separate client and internal Google spreadsheets."""
     return write_grouped_df_to_sheet(
-        None,
         df,
         source_name=title,
         client_sheet_id=client_sheet_id,

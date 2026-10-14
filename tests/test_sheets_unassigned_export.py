@@ -5,10 +5,37 @@ import pandas as pd
 from src.data import sheets_repository
 
 
+def _stub_legacy_single_spreadsheet_path(monkeypatch):
+    monkeypatch.setattr(
+        sheets_repository,
+        "_get_file_metadata",
+        lambda _sheet_id: {"name": "dispatch"},
+        raising=False,
+    )
+    monkeypatch.setattr(
+        sheets_repository,
+        "_ensure_destination_spreadsheet",
+        lambda *_args: ("legacy-shared-id", "legacy-url", False),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        sheets_repository,
+        "_ensure_sheet",
+        lambda _sheet_id, title, _new=False: 1 if title == sheets_repository.CLIENT_SHEET_NAME else 2,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        sheets_repository,
+        "_set_sheet_hidden",
+        lambda *_args, **_kwargs: None,
+        raising=False,
+    )
+
+
 def test_client_sheet_exposes_unassigned_status_and_internal_reason(monkeypatch):
+    _stub_legacy_single_spreadsheet_path(monkeypatch)
     writes = {}
     created = iter(["client-output-id", "internal-output-id"])
-    monkeypatch.setattr(sheets_repository, "_get_file_metadata", lambda _sheet_id: {"name": "dispatch"})
     monkeypatch.setattr(
         sheets_repository,
         "_create_google_sheet",
@@ -17,7 +44,8 @@ def test_client_sheet_exposes_unassigned_status_and_internal_reason(monkeypatch)
     monkeypatch.setattr(
         sheets_repository,
         "_ensure_output_tab",
-        lambda _sheet_id, title, _is_new: 1 if title == sheets_repository.CLIENT_SHEET_NAME else 2,
+        lambda _sheet_id, title, newly_created: 1 if title == sheets_repository.CLIENT_SHEET_NAME else 2,
+        raising=False,
     )
     monkeypatch.setattr(sheets_repository, "_apply_client_sheet_formatting", lambda *_args: None)
     monkeypatch.setattr(
@@ -25,7 +53,7 @@ def test_client_sheet_exposes_unassigned_status_and_internal_reason(monkeypatch)
         "_write_values_to_sheet",
         lambda sheet_id, title, values: writes.__setitem__((sheet_id, title), values),
     )
-    monkeypatch.setattr(sheets_repository, "OUTPUT_FOLDER_ID", "configured-folder-id")
+    monkeypatch.setattr(sheets_repository, "OUTPUT_FOLDER_ID", "configured-folder-id", raising=False)
 
     df = pd.DataFrame(
         {
@@ -41,9 +69,8 @@ def test_client_sheet_exposes_unassigned_status_and_internal_reason(monkeypatch)
     )
 
     outputs = sheets_repository.write_grouped_df_to_sheet(
-        "converted-source-id",
         df,
-        source_sheet_ids={"source-id", "converted-source-id"},
+        source_name="dispatch",
     )
 
     client = writes[("client-output-id", sheets_repository.CLIENT_SHEET_NAME)]
@@ -57,17 +84,16 @@ def test_client_sheet_exposes_unassigned_status_and_internal_reason(monkeypatch)
     assert outputs.client_sheet_id == "client-output-id"
     assert outputs.internal_sheet_id == "internal-output-id"
     assert client[0] == sheets_repository.CLIENT_SHEET_COLUMNS
-    assert set(sheet_id for sheet_id, _ in writes).isdisjoint({"source-id", "converted-source-id"})
+    assert set(sheet_id for sheet_id, _ in writes) == {"client-output-id", "internal-output-id"}
 
 
 def test_output_sheets_are_separate_with_their_own_tabs_and_columns(monkeypatch):
+    _stub_legacy_single_spreadsheet_path(monkeypatch)
     created = iter(["client-output-id", "internal-output-id"])
     created_titles = []
     writes = {}
     tab_setup = []
     formatted = []
-    monkeypatch.setattr(sheets_repository, "_get_file_metadata", lambda _sheet_id: {"name": "dispatch.xlsx"})
-
     def create(title, folder_id):
         created_titles.append((title, folder_id))
         return next(created), f"url:{title}:{folder_id}"
@@ -80,7 +106,8 @@ def test_output_sheets_are_separate_with_their_own_tabs_and_columns(monkeypatch)
     monkeypatch.setattr(
         sheets_repository,
         "_ensure_output_tab",
-        lambda sheet_id, title, is_new: tab_setup.append((sheet_id, title, is_new)) or 1,
+        lambda sheet_id, title, newly_created: tab_setup.append((sheet_id, title, newly_created)) or 1,
+        raising=False,
     )
     monkeypatch.setattr(
         sheets_repository,
@@ -92,10 +119,10 @@ def test_output_sheets_are_separate_with_their_own_tabs_and_columns(monkeypatch)
         "_apply_client_sheet_formatting",
         lambda sheet_id, *_args: formatted.append(sheet_id),
     )
-    monkeypatch.setattr(sheets_repository, "OUTPUT_FOLDER_ID", "configured-folder-id")
+    monkeypatch.setattr(sheets_repository, "OUTPUT_FOLDER_ID", "configured-folder-id", raising=False)
 
     df = pd.DataFrame({"Groupe Taxi": [1], "Zone": ["Ariana"], "InternalOnly": ["secret"]})
-    outputs = sheets_repository.write_grouped_df_to_sheet("source-id", df)
+    outputs = sheets_repository.write_grouped_df_to_sheet(df, source_name="dispatch.xlsx")
 
     assert outputs.client_sheet_id == "client-output-id"
     assert outputs.internal_sheet_id == "internal-output-id"
@@ -125,7 +152,6 @@ def test_explicit_output_ids_require_overwrite_flag(monkeypatch):
 
     try:
         sheets_repository.write_grouped_df_to_sheet(
-            "source-id",
             df,
             client_sheet_id="existing-client-id",
             internal_sheet_id="existing-internal-id",
@@ -142,7 +168,7 @@ def test_output_ids_and_overwrite_flag_are_both_required(monkeypatch):
     df = pd.DataFrame({"Groupe Taxi": [1]})
 
     try:
-        sheets_repository.write_grouped_df_to_sheet("source-id", df, overwrite=True)
+        sheets_repository.write_grouped_df_to_sheet(df, overwrite=True)
     except ValueError as exc:
         assert "output spreadsheet IDs" in str(exc)
     else:
@@ -150,12 +176,13 @@ def test_output_ids_and_overwrite_flag_are_both_required(monkeypatch):
 
 
 def test_explicit_overwrite_targets_only_the_supplied_output_spreadsheets(monkeypatch):
+    _stub_legacy_single_spreadsheet_path(monkeypatch)
     writes = []
-    monkeypatch.setattr(sheets_repository, "_get_file_metadata", lambda _sheet_id: {"name": "dispatch"})
     monkeypatch.setattr(
         sheets_repository,
         "_ensure_output_tab",
-        lambda sheet_id, title, _new: 1,
+        lambda sheet_id, title, newly_created: 1,
+        raising=False,
     )
     monkeypatch.setattr(
         sheets_repository,
@@ -170,7 +197,6 @@ def test_explicit_overwrite_targets_only_the_supplied_output_spreadsheets(monkey
     )
 
     outputs = sheets_repository.write_grouped_df_to_sheet(
-        "source-id",
         pd.DataFrame({"Groupe Taxi": [1]}),
         client_sheet_id="existing-client-id",
         internal_sheet_id="existing-internal-id",
@@ -188,7 +214,7 @@ def test_explicit_overwrite_targets_only_the_supplied_output_spreadsheets(monkey
 def test_new_spreadsheet_is_created_in_configured_folder(monkeypatch):
     drive = Mock()
     drive.files.return_value.create.return_value.execute.return_value = {"id": "created-id"}
-    monkeypatch.setattr(sheets_repository, "OUTPUT_FOLDER_ID", "configured-folder-id")
+    monkeypatch.setattr(sheets_repository, "OUTPUT_FOLDER_ID", "configured-folder-id", raising=False)
     monkeypatch.setattr(sheets_repository, "build_drive_service", lambda: drive)
 
     sheet_id, _ = sheets_repository._create_google_sheet("Client Output")
@@ -206,7 +232,10 @@ def test_new_spreadsheet_is_created_in_configured_folder(monkeypatch):
 
 
 def test_new_spreadsheet_requires_configured_output_folder(monkeypatch):
-    monkeypatch.setattr(sheets_repository, "OUTPUT_FOLDER_ID", None)
+    monkeypatch.setattr(sheets_repository, "OUTPUT_FOLDER_ID", None, raising=False)
+    drive = Mock()
+    drive.files.return_value.create.return_value.execute.return_value = {"id": "created-id"}
+    monkeypatch.setattr(sheets_repository, "build_drive_service", lambda: drive)
 
     try:
         sheets_repository._create_google_sheet("Client Output")
