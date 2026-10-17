@@ -5,6 +5,7 @@ import sys
 import json
 import requests
 from pathlib import Path
+from api_test_support import api_auth_headers
 from src.data.sheets_repository import (
     read_sheet_to_dataframe, 
     CLIENT_SHEET_NAME,
@@ -13,6 +14,7 @@ from src.data.sheets_repository import (
 
 sheet_id = "1O5K9a7d5l4KI11ntGzypTqD5cji6ny3RwThPM0S9wvI"
 base_url = "http://127.0.0.1:8002"
+api_headers = api_auth_headers()
 training_file = Path("data/auto_training_corrections.jsonl")
 
 def print_header(text):
@@ -38,11 +40,16 @@ try:
     group_r = requests.post(
         f"{base_url}/api/group-sheet",
         json={"sheet_id": sheet_id},
+        headers=api_headers,
         timeout=60
     )
     print(f"Group-sheet status: {group_r.status_code}")
     
-    cache_r = requests.get(f"{base_url}/api/debug/training-cache", timeout=5)
+    cache_r = requests.get(
+        f"{base_url}/api/debug/training-cache",
+        headers=api_headers,
+        timeout=5,
+    )
     cache_size = cache_r.json()['pre_correction_cache_size']
     print(f"Cache after grouping: {cache_size} sheet(s) stored")
     
@@ -123,6 +130,7 @@ try:
     val_r = requests.post(
         f"{base_url}/api/validate-sheet",
         json={"sheet_id": sheet_id},
+        headers=api_headers,
         timeout=60
     )
     

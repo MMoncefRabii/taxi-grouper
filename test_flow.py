@@ -4,9 +4,11 @@
 import sys
 import requests
 import json
+from api_test_support import api_auth_headers
 
 sheet_id = "1O5K9a7d5l4KI11ntGzypTqD5cji6ny3RwThPM0S9wvI"
 base_url = "http://127.0.0.1:8002"
+api_headers = api_auth_headers()
 
 def print_header(text):
     print("\n" + "="*70)
@@ -16,7 +18,7 @@ def print_header(text):
 try:
     # Check cache before grouping
     print_header("STEP 1: Check cache BEFORE grouping")
-    cache_r = requests.get(f"{base_url}/api/debug/training-cache")
+    cache_r = requests.get(f"{base_url}/api/debug/training-cache", headers=api_headers)
     cache_before = cache_r.json()['pre_correction_cache_size']
     print(f"Cache size: {cache_before}")
     
@@ -31,6 +33,7 @@ try:
             "operation_filter": None,
             "use_ml": True
         },
+        headers=api_headers,
         timeout=60
     )
     
@@ -44,7 +47,7 @@ try:
     
     # Check cache after grouping
     print_header("STEP 3: Check cache AFTER grouping")
-    cache_r2 = requests.get(f"{base_url}/api/debug/training-cache")
+    cache_r2 = requests.get(f"{base_url}/api/debug/training-cache", headers=api_headers)
     cache_after_group = cache_r2.json()['pre_correction_cache_size']
     print(f"Cache size: {cache_after_group}")
     print(f"Result: {'SUCCESS - cache populated' if cache_after_group > 0 else 'FAIL - cache empty'}")
@@ -54,6 +57,7 @@ try:
     val_r = requests.post(
         f"{base_url}/api/validate-sheet",
         json={"sheet_id": sheet_id},
+        headers=api_headers,
         timeout=60
     )
     
@@ -71,7 +75,7 @@ try:
     
     # Check cache after validation
     print_header("STEP 5: Check cache AFTER validation")
-    cache_r3 = requests.get(f"{base_url}/api/debug/training-cache")
+    cache_r3 = requests.get(f"{base_url}/api/debug/training-cache", headers=api_headers)
     cache_after_val = cache_r3.json()['pre_correction_cache_size']
     print(f"Cache size: {cache_after_val}")
     

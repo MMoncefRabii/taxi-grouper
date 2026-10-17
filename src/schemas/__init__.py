@@ -1,6 +1,11 @@
 from dataclasses import dataclass
 from typing import Any
 
+UNASSIGNED_STATUS_BY_REASON = {
+    "MISSING_DATE": "A CORRIGER: date manquante",
+    "MISSING_DISPATCH_ID": "A CORRIGER: identifiant de dispatch manquant",
+}
+
 HISTORIQUE_COLUMNS = [
     "Date",
     "Matricule",

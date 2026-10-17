@@ -31,7 +31,7 @@ from PySide6.QtWidgets import (
 from src.config import TAXI_COLUMN, UNKNOWN_ZONE
 from src.adapters.exporter import export_like_historique
 from src.core.grouper import group_agents, validate_dispatch
-from src.core.ml_model import train_model_from_historique_excel
+from src.core.ml_model import train_candidate_from_historique_excel
 from src.core.preprocessing import detect_columns, filter_dataframe, load_dispatch_excel
 
 
@@ -308,9 +308,9 @@ class YellowExpressDispatch(QMainWindow):
         self.summary_container.hide()
         layout.addWidget(self.summary_container)
 
-        self.results_table = QTableWidget(0, 6)
+        self.results_table = QTableWidget(0, 7)
         self.results_table.setObjectName("ResultsTable")
-        self.results_table.setHorizontalHeaderLabels(["Taxi", "Matricule", "Nom - Prenom", "Adresse", "Zone", "Heure"])
+        self.results_table.setHorizontalHeaderLabels(["Taxi", "Matricule", "Nom - Prenom", "Adresse", "Zone", "Heure", "Statut"])
         self.results_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.results_table.verticalHeader().setVisible(False)
         self.results_table.setShowGrid(False)
@@ -373,7 +373,7 @@ class YellowExpressDispatch(QMainWindow):
         self.train_button.setText("TRAINING...")
         QApplication.processEvents()
         try:
-            report = train_model_from_historique_excel(str(self.training_file), "models")
+            report = train_candidate_from_historique_excel(str(self.training_file))
         except Exception as exc:
             self.train_button.setEnabled(True)
             self.train_button.setText("TRAIN MODEL")
@@ -382,7 +382,12 @@ class YellowExpressDispatch(QMainWindow):
         self.train_button.setEnabled(True)
         self.train_button.setText("TRAIN MODEL")
         self._show_training_metrics(report)
-        QMessageBox.information(self, "Training Complete", "Model trained and saved to models/taxi_grouping_model.pkl")
+        QMessageBox.information(
+            self,
+            "Candidate Training Complete",
+            "Candidate model saved to models/candidate. The active model was not changed. "
+            "Use the documented manual promotion procedure to approve it.",
+        )
 
     def _show_training_metrics(self, report: dict) -> None:
         while self.training_metrics_grid.count():
@@ -486,9 +491,11 @@ class YellowExpressDispatch(QMainWindow):
         if self.grouped_df is None:
             return
         total_agents = len(self.grouped_df)
-        total_taxis = int(self.grouped_df[TAXI_COLUMN].nunique()) if total_agents else 0
+        assigned = self.grouped_df[TAXI_COLUMN].notna() & self.grouped_df[TAXI_COLUMN].astype(str).str.strip().ne("")
+        total_taxis = int(self.grouped_df.loc[assigned, TAXI_COLUMN].nunique()) if assigned.any() else 0
+        assigned_agents = int(assigned.sum())
         unknown_count = int((self.grouped_df["Zone"] == UNKNOWN_ZONE).sum()) if "Zone" in self.grouped_df else 0
-        average = round(total_agents / total_taxis, 1) if total_taxis else 0
+        average = round(assigned_agents / total_taxis, 1) if total_taxis else 0
         cards = [
             (str(total_agents), "Total Agents"),
             (str(total_taxis), "Total Taxis"),
@@ -516,16 +523,19 @@ class YellowExpressDispatch(QMainWindow):
             return
         columns = detect_columns(self.grouped_df)
         matricule_col = self._find_column(self.grouped_df, ["Matricule", "ID", "Taxi ID"])
+        status_col = self._find_column(self.grouped_df, ["AssignmentStatus", "Statut"])
         rows = []
         for _, row in self.grouped_df.head(80).iterrows():
+            taxi_value = self._cell_text(row, TAXI_COLUMN)
             rows.append(
                 [
-                    f"Taxi {self._cell_text(row, TAXI_COLUMN)}",
+                    f"Taxi {taxi_value}" if taxi_value else "",
                     self._cell_text(row, matricule_col),
                     self._cell_text(row, columns.name),
                     self._cell_text(row, columns.address),
                     self._cell_text(row, "Zone"),
                     self._cell_text(row, columns.time) or self.time_combo.currentText(),
+                    self._cell_text(row, status_col),
                 ]
             )
         self.results_table.setRowCount(len(rows))

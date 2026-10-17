@@ -1,7 +1,13 @@
 import requests, sys
+from api_test_support import api_auth_headers
+
 file_id = '1FAuCPcnKgSKo_45efeeLko9oDE4uV-5H'
 try:
-    token_resp = requests.get('http://localhost:8000/api/auth/token', timeout=5)
+    token_resp = requests.get(
+        'http://localhost:8000/api/auth/token',
+        headers=api_auth_headers(),
+        timeout=5,
+    )
     token_resp.raise_for_status()
     token = token_resp.json().get('access_token')
     if not token:

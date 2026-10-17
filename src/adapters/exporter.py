@@ -12,7 +12,7 @@ from openpyxl.utils import get_column_letter
 
 from ..config import TAXI_COLUMN, UNKNOWN_ZONE
 from ..core.grouper import validate_dispatch
-from ..schemas import HISTORIQUE_COLUMNS
+from ..schemas import HISTORIQUE_COLUMNS, UNASSIGNED_STATUS_BY_REASON
 
 NAVY = "102A43"
 GOLD = "F0B429"
@@ -26,7 +26,7 @@ HIST_HEADER_ORANGE = "FF7E00"
 HIST_HEADER_YELLOW = "FFFF00"
 HIST_TAXI_RED = "FF0000"
 HIST_GROUP_COLORS = ["FF9900", "FFFFFF"]
-DISPATCH_EXPORT_COLUMNS = ["Date", "Matricule", "Nom - Prénom", "Opération", "Site", "Numéro", "Adresse", "Heure d'arrivée", "Taxi", "PRIX"]
+DISPATCH_EXPORT_COLUMNS = ["Date", "Matricule", "Nom - Prénom", "Opération", "Site", "Numéro", "Adresse", "Heure d'arrivée", "Taxi", "PRIX", "Statut"]
 
 
 def export_excel(df: pd.DataFrame, output_path: str | Path, taxi_column: str = TAXI_COLUMN) -> Path:
@@ -36,7 +36,13 @@ def export_excel(df: pd.DataFrame, output_path: str | Path, taxi_column: str = T
     work = df.copy()
     if taxi_column not in work.columns:
         raise ValueError(f"Missing taxi column: {taxi_column}")
-    work = work.sort_values([taxi_column], kind="stable").reset_index(drop=True)
+    work = validate_dispatch(work, taxi_column=taxi_column)["dataframe"]
+    work["_export_taxi_sort_key"] = pd.to_numeric(work[taxi_column], errors="coerce")
+    work = (
+        work.sort_values("_export_taxi_sort_key", kind="stable", na_position="last")
+        .drop(columns=["_export_taxi_sort_key"])
+        .reset_index(drop=True)
+    )
 
     wb = Workbook()
     ws = wb.active
@@ -62,17 +68,21 @@ def _write_table(ws, df: pd.DataFrame, taxi_column: str) -> None:
     ws.freeze_panes = "A2"
     ws.auto_filter.ref = ws.dimensions
 
-    taxi_blocks: list[tuple[int, int, int]] = []
+    taxi_blocks: list[tuple[object, int, int]] = []
     current_taxi = None
     start_row = 2
     for row_idx, (_, row) in enumerate(df.iterrows(), start=2):
         taxi = row[taxi_column]
-        if taxi != current_taxi:
+        is_assigned = pd.notna(taxi) and str(taxi).strip() != ""
+        if not is_assigned and current_taxi is not None:
+            taxi_blocks.append((current_taxi, start_row, row_idx - 1))
+            current_taxi = None
+        elif is_assigned and taxi != current_taxi:
             if current_taxi is not None:
-                taxi_blocks.append((int(current_taxi), start_row, row_idx - 1))
+                taxi_blocks.append((current_taxi, start_row, row_idx - 1))
             current_taxi = taxi
             start_row = row_idx
-        fill_color = GROUP_A if int(taxi) % 2 == 0 else GROUP_B
+        fill_color = (GROUP_A if int(taxi) % 2 == 0 else GROUP_B) if is_assigned else UNKNOWN_FILL
         if str(row.get("Zone", "")) == UNKNOWN_ZONE:
             fill_color = UNKNOWN_FILL
         for col_idx, col in enumerate(columns, start=1):
@@ -82,7 +92,7 @@ def _write_table(ws, df: pd.DataFrame, taxi_column: str) -> None:
             cell.border = border
             cell.alignment = Alignment(horizontal="center" if col in {taxi_column, "Zone", "Confidence"} else "left", vertical="center")
     if current_taxi is not None:
-        taxi_blocks.append((int(current_taxi), start_row, len(df) + 1))
+        taxi_blocks.append((current_taxi, start_row, len(df) + 1))
 
     for taxi, first_row, last_row in taxi_blocks:
         if last_row > first_row:
@@ -103,13 +113,15 @@ def _write_table(ws, df: pd.DataFrame, taxi_column: str) -> None:
 def _write_summary(wb: Workbook, df: pd.DataFrame, taxi_column: str) -> None:
     ws = wb.create_sheet("Summary")
     total_agents = len(df)
-    total_taxis = int(df[taxi_column].nunique()) if total_agents else 0
+    assigned = df[taxi_column].notna() & df[taxi_column].astype(str).str.strip().ne("")
+    total_taxis = int(df.loc[assigned, taxi_column].nunique()) if assigned.any() else 0
+    assigned_agents = int(assigned.sum())
     unknown_count = int((df.get("Zone", pd.Series(dtype=str)) == UNKNOWN_ZONE).sum())
     zones_used = sorted(str(z) for z in df.get("Zone", pd.Series(dtype=str)).dropna().unique())
     summary = [
         ("Total agents", total_agents),
         ("Total taxis", total_taxis),
-        ("Average agents per taxi", round(total_agents / total_taxis, 2) if total_taxis else 0),
+        ("Average agents per taxi", round(assigned_agents / total_taxis, 2) if total_taxis else 0),
         ("Unknown addresses", unknown_count),
         ("Number of zones used", len(zones_used)),
         ("Zones used", ", ".join(zones_used)),
@@ -124,7 +136,8 @@ def _write_summary(wb: Workbook, df: pd.DataFrame, taxi_column: str) -> None:
         cell = ws.cell(start, col_idx, header)
         cell.fill = PatternFill("solid", fgColor=NAVY)
         cell.font = Font(color=GOLD, bold=True)
-    for row_idx, (taxi, group) in enumerate(df.groupby(taxi_column), start=start + 1):
+    assigned_rows = df.loc[assigned]
+    for row_idx, (taxi, group) in enumerate(assigned_rows.groupby(taxi_column), start=start + 1):
         ws.cell(row_idx, 1, taxi)
         ws.cell(row_idx, 2, len(group))
         ws.cell(row_idx, 3, ", ".join(sorted(str(z) for z in group["Zone"].dropna().unique())))
@@ -139,7 +152,7 @@ def export_like_historique(grouped_df, output_path: str, sheet_name: str = "Disp
     as the historical Historique.xlsx file.
 
     Visible columns:
-    Date, Matricule, Nom - Prénom, Opération, Site, Adresse, Heure d'arrivée, Taxi
+    Date, Matricule, Nom - Prénom, Opération, Site, Adresse, Heure d'arrivée, Taxi, Statut
 
     Repeated headers must be inserted for each dispatch time block.
     Taxi cells must be grouped/merged vertically.
@@ -159,12 +172,19 @@ def export_like_historique(grouped_df, output_path: str, sheet_name: str = "Disp
         export_validation_report(validation, validation_report_path)
     if validation["errors"]:
         raise ValueError("Dispatch validation failed. Final Excel was not exported:\n" + "\n".join(validation["errors"]))
+    df = validation["dataframe"]
 
     time_col = _find_col(df, ["Heure d'arrivée", "Heure", "Heure arrivée", "Heure d arrivee"])
     date_col = _find_col(df, ["Date"])
+    df[taxi_col] = df[taxi_col].fillna("")
+    df["_export_taxi_sort"] = pd.to_numeric(df[taxi_col], errors="coerce")
     df["_export_time"] = df[time_col].astype(str) if time_col else ""
     df["_export_date"] = df[date_col].astype(str) if date_col else ""
-    df = df.sort_values(["_export_time", taxi_col, "_export_date"], kind="stable").reset_index(drop=True)
+    df = (
+        df.sort_values(["_export_time", "_export_taxi_sort", "_export_date"], kind="stable", na_position="last")
+        .drop(columns=["_export_taxi_sort"])
+        .reset_index(drop=True)
+    )
 
     wb = Workbook()
     ws = wb.active
@@ -177,7 +197,6 @@ def export_like_historique(grouped_df, output_path: str, sheet_name: str = "Disp
     for _, block in grouped_blocks:
         _write_historique_header(ws, row_cursor)
         row_cursor += 1
-        block = block.sort_values([taxi_col], kind="stable")
         taxi_color_index = 0
         taxi_visible_col = DISPATCH_EXPORT_COLUMNS.index("Taxi") + 1
         for taxi, taxi_group in block.groupby(taxi_col, sort=False):
@@ -305,6 +324,10 @@ def _write_historique_header(ws, row_idx: int) -> None:
 
 
 def _historique_visible_row(record: pd.Series, taxi_col: str, taxi) -> list:
+    reason = str(record.get("UnassignedReason", "") or "")
+    status = record.get("AssignmentStatus")
+    if pd.isna(status) or not str(status).strip():
+        status = UNASSIGNED_STATUS_BY_REASON.get(reason, "")
     return [
         _record_value(record, ["Date"]),
         _record_value(record, ["Matricule"]),
@@ -316,6 +339,7 @@ def _historique_visible_row(record: pd.Series, taxi_col: str, taxi) -> list:
         _record_value(record, ["Heure d'arrivée", "Heure", "Heure de départ"]),
         taxi,
         _record_value(record, ["PRIX", "Prix", "Price"]),
+        status,
     ]
 
 

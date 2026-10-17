@@ -26,7 +26,7 @@ It supports Excel dispatch input, address normalization, zone compatibility, opt
 1. Windows, macOS, or Linux.
 2. Python 3.10+ installed and available as `python`.
 3. `pip` available in the selected Python environment.
-4. For the frontend only: Node.js and npm if you want to run the React/Vite app under `frontend/`.
+4. The React/Vite code under `frontend/` is retained only as a reference and is unsupported; do not run it.
 
 ---
 
@@ -49,16 +49,6 @@ pip install -r requirements-ui.txt
 
 > On macOS/Linux use `source .venv/bin/activate` instead of the Windows activate command.
 
-
-### Frontend environment
-
-If you run the frontend from `frontend/`, create a `frontend/.env` file containing:
-
-```dotenv
-VITE_GOOGLE_API_KEY=<your-Google-API-key>
-```
-
-The frontend uses `VITE_GOOGLE_API_KEY`, so a root `.env` with `GOOGLE_API_KEY` is not sufficient for Vite.
 
 ---
 
@@ -113,8 +103,37 @@ The Streamlit app uses shared core grouping logic from `src.core`.
 The API backend is defined in `src/api/service.py`.
 
 ```bash
-uvicorn src.api.service:app --reload
+python api.py
 ```
+
+The root launcher binds to `127.0.0.1` by default. Set `API_HOST` to an
+explicit interface address to bind elsewhere, for example in PowerShell:
+
+```powershell
+$env:API_HOST = "192.0.2.10"
+python api.py
+```
+
+Business, debug, API documentation, and OAuth-management routes require the
+`TAXI_GROUPER_API_KEY` server environment variable and an
+`Authorization: Bearer <key>` header. `/health`, `/api/auth/login-url`, and
+`/auth/callback` are the only unauthenticated application endpoints (CORS
+`OPTIONS` preflight requests also pass without authentication). If the server key is
+missing or shorter than 32 characters, protected requests fail closed with
+HTTP 503; missing or incorrect caller credentials receive HTTP 401.
+
+Generate a strong key and configure it in the API process environment; do not
+put it in source control, the React bundle, or a URL:
+
+```powershell
+python -c "import secrets; print(secrets.token_urlsafe(32))"
+$env:TAXI_GROUPER_API_KEY = "<generated-key>"
+python api.py
+```
+
+**Warning:** OAuth login/callback remain temporary unauthenticated handshake
+routes; OAuth state validation is not implemented. The React/Vite frontend is
+unsupported and will receive HTTP 401 on protected routes. Do not relaunch it.
 
 Available endpoints include:
 
@@ -123,11 +142,20 @@ Available endpoints include:
 - `GET /api/auth/status` — OAuth sign-in status
 - `POST /api/group-sheet` — group agents from a Google Sheet and write results back
 
-For frontend builders or scripting integrations, see [`docs/api_usage.md`](docs/api_usage.md).
+For service-to-service API callers, see [`docs/api_usage.md`](docs/api_usage.md).
 
 The backend uses shared services from `src.api`, `src.core`, and `src.data`.
 
-> Google Sheet integration requires proper Google OAuth setup. Token state is stored in `data/google_oauth_tokens.json`, and the system no longer persists `client_secret` there.
+> Google Sheet integration requires proper Google OAuth setup. Token state is stored in `src/data/google_oauth_tokens.json`, and the system no longer persists `client_secret` there.
+
+On Windows, restrict access to the token file and its containing `src\data`
+directory to the account that runs the API, `SYSTEM`, and Administrators. The
+directory currently inherits Modify access for Authenticated Users, so changing
+only the token file ACL may still allow another user to replace it through the
+parent directory. Apply ACL changes manually after confirming the service
+account; keep Modify access for that account so token refresh and atomic writes
+continue to work. Review the impact on other files in `src\data` before
+removing inherited permissions.
 
 > **Current deployment model:** the app is designed for a single server instance using local filesystem persistence only (`data/` and `models/`). This is safe for one server / one client deployment, but multi-instance/load-balanced deployment is a known future constraint.
 
@@ -144,21 +172,39 @@ Training expects historical or corrected Excel data containing a valid address c
 Train a model with:
 
 ```bash
-python train.py --data data/training_files/ --output models/
+python train.py --data data/training_files/
 ```
 
 Or train from corrected data:
 
 ```bash
-python train.py --data data/corrected/ --output models/
+python train.py --data data/corrected/
 ```
 
-The model files are saved under `models/`:
+Training writes a candidate under `models/candidate/` by default and never
+overwrites the active `models/taxi_grouping_model.pkl`. An explicit
+`--output models/` is rejected for the same reason. Automatic retraining after
+corrections also evaluates and stores a candidate only; it does not activate it.
 
-- `models/taxi_grouping_model.pkl`
-- `models/config.json`
+Promotion is disabled by default. After reviewing the candidate metrics, enable
+the promotion gate and explicitly approve the candidate:
 
-If no trained model exists, the system falls back to rule-based grouping.
+```powershell
+$env:MODEL_PROMOTION_ENABLED = "true"
+python promote_model.py promote --approve --approved-by "Your Name"
+```
+
+The command records the approver, time, candidate version, and metrics in
+`models/promotion_log.jsonl`, and saves the previous active model under
+`models/rollback/`. To restore the most recently saved active model:
+
+```powershell
+python promote_model.py rollback --approve --approved-by "Your Name"
+```
+
+The Yellow Express desktop training workflow also saves to `models/candidate/`;
+its subsequent dispatch actions continue to load the active model. If no active
+trained model exists, the system falls back to rule-based grouping.
 
 ---
 
@@ -226,6 +272,20 @@ To run a single file:
 pytest tests/test_grouper.py
 ```
 
+### Reproducible test environment (Windows)
+
+With Python 3.13.5 registered with the Python launcher, create a fresh
+environment and install the fully pinned test dependencies:
+
+```powershell
+py -3.13 -m venv .venv-test
+.\.venv-test\Scripts\python.exe --version
+.\.venv-test\Scripts\python.exe -m pip install -r requirements-test.lock
+.\.venv-test\Scripts\python.exe -m pytest
+```
+
+The version check should report Python 3.13.5. `.venv-test` is ignored by Git.
+
 ---
 
 ## Architecture
@@ -244,7 +304,7 @@ Other key folders:
 - `data/` — runtime data, corrected outputs, OAuth token storage
 - `models/` — trained ML artifacts and metadata
 - `outputs/` — generated Excel export outputs
-- `frontend/` — React/Vite frontend code
+- `frontend/` — unsupported React/Vite reference code; do not run
 - `tests/` — unit and integration tests
 
 ---
@@ -293,15 +353,11 @@ Other key folders:
 - ML ordering is optional and cannot override hard zone rules.
 - Unknown addresses are preserved and flagged separately.
 
-### Optional frontend
+### Retired React frontend
 
-If you want to inspect or extend the React/Vite frontend under `frontend/`, install Node dependencies and use:
-
-```bash
-cd frontend
-npm install
-npm run dev
-```
+The `frontend/` folder is retained only as a reference for the later Fleet
+Tracker Sheets/Picker port. It is unsupported, protected API routes reject it
+with HTTP 401, and it must not be relaunched.
 
 ---
 
@@ -309,4 +365,4 @@ npm run dev
 
 - If `streamlit` is not found, confirm the virtual environment is active and that `streamlit` is installed.
 - If Excel files fail to load, verify the file format is `.xlsx` or `.xls` and that the sheet contains recognized headers.
-- If Google Sheet operations fail, ensure OAuth credentials are configured and `data/google_oauth_tokens.json` is writable.
+- If Google Sheet operations fail, ensure OAuth credentials are configured and `src/data/google_oauth_tokens.json` is writable.

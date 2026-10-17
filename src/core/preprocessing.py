@@ -20,6 +20,13 @@ TAXI_ALIASES = ["taxi", "groupe", "groupe taxi", "taxi id", "taxi_group", "taxi 
 OPERATION_ALIASES = ["operation", "opération", "client"]
 SITE_ALIASES = ["site"]
 TYPE_COURSE_ALIASES = ["type de course", "ramassage retour", "ramassage / retour"]
+DISPATCH_ID_ALIASES = {
+    "dispatchid",
+    "sourcedispatchid",
+    "iddispatch",
+    "dispatchnumber",
+    "dispatchno",
+}
 
 
 @dataclass(frozen=True)
@@ -46,15 +53,100 @@ def is_repeated_header_row(values: list[object]) -> bool:
 
 
 def _matching_header(values: list[object]) -> list[str] | None:
+    normalized_values = [normalize_text(value) for value in values]
     for header in [HISTORIQUE_COLUMNS_WITH_NUMERO, HISTORIQUE_COLUMNS]:
-        normalized = [normalize_text(value) for value in values[: len(header)]]
         expected = [normalize_text(value) for value in header]
-        if normalized == expected:
-            return header
+        if normalized_values[: len(expected)] == expected:
+            extra_headers = [
+                str(value).strip() if not pd.isna(value) else ""
+                for value in values[len(expected) :]
+            ]
+            while extra_headers and not extra_headers[-1]:
+                extra_headers.pop()
+            return list(header) + extra_headers
+        if all(column in normalized_values for column in expected) and any(
+            _normalized_dispatch_id(value) in DISPATCH_ID_ALIASES for value in values
+        ):
+            headers = [str(value).strip() if not pd.isna(value) else "" for value in values]
+            while headers and not headers[-1]:
+                headers.pop()
+            return headers
     return None
 
 
-def load_dispatch_excel(path: str | Path, read_all_sheets: bool = True) -> pd.DataFrame:
+def _normalized_dispatch_id(value: object) -> str:
+    return "".join(character.lower() for character in str(value) if character.isalnum())
+
+
+def _find_dispatch_id_column(columns: list[str]) -> str | None:
+    return next(
+        (
+            column
+            for column in columns
+            if _normalized_dispatch_id(column) in DISPATCH_ID_ALIASES
+        ),
+        None,
+    )
+
+
+def _clean_dispatch_id(value: object) -> str | None:
+    if pd.isna(value):
+        return None
+    cleaned = str(value).strip()
+    return cleaned or None
+
+
+def _add_dispatch_block_metadata(
+    df: pd.DataFrame,
+    source_id: str,
+    sheet_name: str,
+    block_ordinals: list[int],
+) -> pd.DataFrame:
+    result = df.copy()
+    dispatch_id_column = _find_dispatch_id_column(list(result.columns))
+    if dispatch_id_column is not None:
+        result["SourceDispatchID"] = result[dispatch_id_column].map(_clean_dispatch_id)
+        result["block_id_origin"] = "provided"
+        return result
+
+    source = str(source_id).strip()
+    sheet = str(sheet_name).strip()
+    generated_ids = [
+        f"{source} | {sheet} | {ordinal}" if source and sheet and ordinal > 0 else None
+        for ordinal in block_ordinals
+    ]
+    result["SourceDispatchID"] = generated_ids
+    result["block_id_origin"] = [
+        "synthesized" if dispatch_id is not None else ""
+        for dispatch_id in generated_ids
+    ]
+    return result
+
+
+def add_dispatch_block_metadata(
+    df: pd.DataFrame,
+    source_id: str,
+    sheet_name: str,
+    block_ordinal: int = 1,
+    block_ordinals: list[int] | None = None,
+) -> pd.DataFrame:
+    """Attach a provided or source-namespaced synthesized dispatch id."""
+    ordinals = block_ordinals if block_ordinals is not None else [block_ordinal] * len(df)
+    if len(ordinals) != len(df):
+        raise ValueError("block_ordinals must contain one ordinal for each dataframe row.")
+    return _add_dispatch_block_metadata(
+        df,
+        source_id=source_id,
+        sheet_name=sheet_name,
+        block_ordinals=ordinals,
+    )
+
+
+def load_dispatch_excel(
+    path: str | Path,
+    read_all_sheets: bool = True,
+    source_id: str | None = None,
+) -> pd.DataFrame:
     """Load a dispatch workbook, removing repeated Historique-style header rows safely."""
     path = Path(path)
     if not path.exists():
@@ -75,10 +167,12 @@ def load_dispatch_excel(path: str | Path, read_all_sheets: bool = True) -> pd.Da
         raw_sheets = {"Sheet1": raw_sheets}
 
     frames: list[pd.DataFrame] = []
+    source_id = source_id or path.name
     for sheet_name, raw in raw_sheets.items():
         current_block = -1
         current_headers: list[str] | None = None
         rows: list[dict[str, object]] = []
+        block_ordinals: list[int] = []
         saw_repeated_header = False
         for raw_index, raw_row in raw.iterrows():
             values = raw_row.tolist()
@@ -97,10 +191,19 @@ def load_dispatch_excel(path: str | Path, read_all_sheets: bool = True) -> pd.Da
                 record["SourceSheet"] = sheet_name
                 record["BlockID"] = f"{sheet_name}_{current_block}"
                 rows.append(record)
+                block_ordinals.append(current_block + 1)
 
         if saw_repeated_header:
             if rows:
-                frames.append(pd.DataFrame(rows))
+                sheet_frame = pd.DataFrame(rows)
+                frames.append(
+                    _add_dispatch_block_metadata(
+                        sheet_frame,
+                        source_id=source_id,
+                        sheet_name=sheet_name,
+                        block_ordinals=block_ordinals,
+                    )
+                )
         else:
             if path.suffix.lower() == ".ods":
                 normal = _raw_sheet_to_table(raw)
@@ -108,7 +211,14 @@ def load_dispatch_excel(path: str | Path, read_all_sheets: bool = True) -> pd.Da
                 normal = pd.read_excel(path, sheet_name=sheet_name)
             normal["SourceSheet"] = sheet_name
             normal["BlockID"] = f"{sheet_name}_0"
-            frames.append(normal)
+            frames.append(
+                _add_dispatch_block_metadata(
+                    normal,
+                    source_id=source_id,
+                    sheet_name=sheet_name,
+                    block_ordinals=[1] * len(normal),
+                )
+            )
 
     if not frames:
         raise ValueError("No agent rows found in the Excel file.")

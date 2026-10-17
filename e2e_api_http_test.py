@@ -13,6 +13,8 @@ from pathlib import Path
 import requests
 from openpyxl import load_workbook
 
+from api_test_support import api_auth_headers
+
 API_BASE = "http://127.0.0.1:8000"
 
 
@@ -20,14 +22,14 @@ def post_group(file_path: str):
     url = f"{API_BASE}/api/group"
     with open(file_path, "rb") as f:
         files = {"file": (Path(file_path).name, f, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}
-        resp = requests.post(url, files=files)
+        resp = requests.post(url, files=files, headers=api_auth_headers())
     resp.raise_for_status()
     return resp.json()
 
 
 def post_export(grouped_data, out_path: str):
     url = f"{API_BASE}/api/export"
-    headers = {"Content-Type": "application/json"}
+    headers = {"Content-Type": "application/json", **api_auth_headers()}
     # The API expects the JSON body to be the array itself (not wrapped as {"grouped_data": ...})
     resp = requests.post(url, json=grouped_data, headers=headers)
     resp.raise_for_status()

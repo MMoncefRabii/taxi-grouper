@@ -1,7 +1,100 @@
 import pandas as pd
 
-from src.core.grouper import group_agents, validate_groups
+from src.config import GrouperConfig
+from src.core.grouper import _parse_dispatch_dates, group_agents as _group_agents, validate_dispatch, validate_groups
 from src.core.preprocessing import detect_columns
+
+
+def group_agents(df, columns=None, **kwargs):
+    """Keep existing rule tests on one valid dispatch block."""
+    df = df.copy()
+    if "Date" not in df.columns:
+        df["Date"] = "2026-05-28"
+    if "SourceDispatchID" not in df.columns:
+        df["SourceDispatchID"] = "legacy.xlsx | Sheet1 | 1"
+    return _group_agents(df, columns=columns or detect_columns(df), **kwargs)
+
+
+def test_ambiguous_day_first_date_is_april_3():
+    parsed = _parse_dispatch_dates(pd.Series(["03/04/2026"]))
+
+    assert parsed.iloc[0] == pd.Timestamp("2026-04-03")
+
+
+def test_day_first_date_after_day_twelve_is_april_13():
+    parsed = _parse_dispatch_dates(pd.Series(["13/04/2026"]))
+
+    assert parsed.iloc[0] == pd.Timestamp("2026-04-13")
+
+
+def test_iso_date_is_parsed_as_april_3():
+    parsed = _parse_dispatch_dates(pd.Series(["2026-04-03"]))
+
+    assert parsed.iloc[0] == pd.Timestamp("2026-04-03")
+
+
+def test_day_first_option_is_configurable():
+    parsed = _parse_dispatch_dates(pd.Series(["03/04/2026"]), day_first=False)
+
+    assert parsed.iloc[0] == pd.Timestamp("2026-03-04")
+
+
+def test_day_first_option_is_available_in_grouper_config():
+    df = pd.DataFrame(
+        {
+            "Date": ["03/04/2026", "2026-03-04"],
+            "SourceDispatchID": ["dispatch-A"] * 2,
+            "Nom": ["Agent 1", "Agent 2"],
+            "Adresse": ["Ariana"] * 2,
+            "Heure": ["07:00"] * 2,
+        }
+    )
+
+    grouped, _warnings = _group_agents(
+        df,
+        detect_columns(df),
+        config=GrouperConfig(day_first=False),
+        use_ml=False,
+    )
+
+    assert grouped["Groupe Taxi"].nunique() == 1
+
+
+def test_datetime_date_value_is_preserved():
+    value = pd.Timestamp("2026-04-03 14:25:36")
+
+    parsed = _parse_dispatch_dates(pd.Series([value]))
+
+    assert parsed.iloc[0] == value
+
+
+def test_excel_serial_date_is_converted_from_excel_epoch():
+    parsed = _parse_dispatch_dates(pd.Series([46115]))
+
+    assert parsed.iloc[0] == pd.Timestamp("2026-04-03")
+
+
+def test_excel_serial_dates_outside_configured_range_are_unassigned():
+    df = pd.DataFrame(
+        {
+            "Date": [43830, 73416, 20260403],
+            "SourceDispatchID": ["dispatch-A"] * 3,
+            "Nom": ["Before range", "After range", "Compact date"],
+            "Adresse": ["Ariana"] * 3,
+            "Heure": ["07:00"] * 3,
+        }
+    )
+
+    grouped, _warnings = _group_agents(df, detect_columns(df), use_ml=False)
+
+    assert grouped["Groupe Taxi"].eq("").all()
+    assert grouped["UnassignedReason"].eq("MISSING_DATE").all()
+
+
+def test_excel_serial_date_range_can_be_configured():
+    parsed = _parse_dispatch_dates(pd.Series([40000]), excel_serial_min=40000)
+
+    assert parsed.iloc[0] == pd.Timestamp("2009-07-06")
 
 
 def test_grouping_never_exceeds_four():
@@ -15,6 +108,179 @@ def test_grouping_never_exceeds_four():
     grouped, _warnings = group_agents(df, detect_columns(df), use_ml=False)
     validate_groups(grouped)
     assert grouped.groupby("Groupe Taxi").size().max() <= 4
+
+
+def test_same_time_and_course_on_different_dates_never_share_a_taxi():
+    df = pd.DataFrame(
+        {
+            "Date": ["2026-05-28"] * 2 + ["2026-05-29"] * 2,
+            "SourceDispatchID": ["dispatch-A"] * 4,
+            "Nom": ["A1", "A2", "B1", "B2"],
+            "Adresse": ["Ariana"] * 4,
+            "Heure": ["07:00"] * 4,
+            "Type de course": ["Ramassage"] * 4,
+        }
+    )
+
+    grouped, _warnings = _group_agents(df, detect_columns(df), use_ml=False)
+    taxis_by_date = grouped.groupby("Date")["Groupe Taxi"].apply(set)
+
+    assert taxis_by_date["2026-05-28"].isdisjoint(taxis_by_date["2026-05-29"])
+
+
+def test_same_date_time_and_course_with_different_dispatch_ids_never_share_a_taxi():
+    df = pd.DataFrame(
+        {
+            "Date": ["2026-05-28"] * 4,
+            "SourceDispatchID": ["dispatch-A"] * 2 + ["dispatch-B"] * 2,
+            "Nom": ["A1", "A2", "B1", "B2"],
+            "Adresse": ["Ariana"] * 4,
+            "Heure": ["07:00"] * 4,
+            "Type de course": ["Ramassage"] * 4,
+        }
+    )
+
+    grouped, _warnings = _group_agents(df, detect_columns(df), use_ml=False)
+    taxis_by_dispatch = grouped.groupby("SourceDispatchID")["Groupe Taxi"].apply(set)
+
+    assert taxis_by_dispatch["dispatch-A"].isdisjoint(taxis_by_dispatch["dispatch-B"])
+
+
+def test_validate_dispatch_rejects_external_taxi_with_multiple_dates():
+    df = pd.DataFrame(
+        {
+            "Date": ["2026-05-28", "2026-05-29"],
+            "SourceDispatchID": ["dispatch-A"] * 2,
+            "Groupe Taxi": [1, 1],
+            "Adresse": ["Ariana"] * 2,
+            "Zone": ["A"] * 2,
+            "DetectedDestination": ["Ariana"] * 2,
+        }
+    )
+
+    validation = validate_dispatch(df)
+
+    assert not validation["valid"]
+    assert any("multiple dates" in error.lower() for error in validation["errors"])
+
+
+def test_validate_dispatch_rejects_external_taxi_with_multiple_source_blocks():
+    df = pd.DataFrame(
+        {
+            "Date": ["2026-05-28"] * 2,
+            "SourceDispatchID": ["dispatch-A", "dispatch-B"],
+            "Groupe Taxi": [1, 1],
+            "Adresse": ["Ariana"] * 2,
+            "Zone": ["A"] * 2,
+            "DetectedDestination": ["Ariana"] * 2,
+        }
+    )
+
+    validation = validate_dispatch(df)
+
+    assert not validation["valid"]
+    assert any("multiple source dispatch ids" in error.lower() for error in validation["errors"])
+
+
+def test_missing_or_unparseable_date_and_missing_dispatch_id_are_unassigned():
+    df = pd.DataFrame(
+        {
+            "Date": [None, "not-a-date", "2026-05-28"],
+            "SourceDispatchID": ["dispatch-A", "dispatch-A", None],
+            "Nom": ["Missing date", "Invalid date", "Missing dispatch"],
+            "Adresse": ["Ariana"] * 3,
+            "Heure": ["07:00"] * 3,
+        }
+    )
+
+    grouped, _warnings = _group_agents(df, detect_columns(df), use_ml=False)
+
+    assert grouped["Groupe Taxi"].eq("").all()
+    assert grouped["UnassignedReason"].tolist() == ["MISSING_DATE", "MISSING_DATE", "MISSING_DISPATCH_ID"]
+    assert grouped["AssignmentStatus"].tolist() == [
+        "A CORRIGER: date manquante",
+        "A CORRIGER: date manquante",
+        "A CORRIGER: identifiant de dispatch manquant",
+    ]
+
+
+def test_invalid_rows_have_no_taxi_and_do_not_shift_valid_taxi_numbers():
+    df = pd.DataFrame(
+        {
+            "Date": [None, "2026-05-28", "2026-05-28"],
+            "SourceDispatchID": ["dispatch-A", "dispatch-A", "dispatch-A"],
+            "Nom": ["Missing date", "Valid 1", "Valid 2"],
+            "Adresse": ["Ariana"] * 3,
+            "Heure": ["07:00"] * 3,
+        }
+    )
+
+    grouped, _warnings = _group_agents(df, detect_columns(df), use_ml=False)
+
+    invalid = grouped[grouped["UnassignedReason"] == "MISSING_DATE"].iloc[0]
+    valid = grouped[grouped["UnassignedReason"] == ""]
+    assert invalid["Groupe Taxi"] == ""
+    assert invalid["AssignmentStatus"] == "A CORRIGER: date manquante"
+    assert set(valid["Groupe Taxi"]) == {1}
+
+
+def test_validate_dispatch_does_not_report_unassigned_blank_taxi_as_error():
+    df = pd.DataFrame(
+        {
+            "Date": [None],
+            "SourceDispatchID": ["dispatch-A"],
+            "Groupe Taxi": [7],
+            "UnassignedReason": ["MISSING_DATE"],
+            "AssignmentStatus": ["A CORRIGER: date manquante"],
+            "Adresse": ["Ariana"],
+            "Zone": ["H"],
+        }
+    )
+
+    validation = validate_dispatch(df)
+
+    assert validation["valid"]
+    assert validation["errors"] == []
+    assert any("MISSING_DATE" in warning for warning in validation["warnings"])
+    assert validation["dataframe"].loc[0, "Groupe Taxi"] == ""
+
+
+def test_same_dispatch_block_still_groups_normally():
+    df = pd.DataFrame(
+        {
+            "Date": ["2026-05-28"] * 4,
+            "SourceDispatchID": ["dispatch-A"] * 4,
+            "Nom": [f"Agent {i}" for i in range(4)],
+            "Adresse": ["Ariana"] * 4,
+            "Heure": ["07:00"] * 4,
+            "Type de course": ["Ramassage"] * 4,
+        }
+    )
+
+    grouped, _warnings = _group_agents(df, detect_columns(df), use_ml=False)
+
+    assert grouped["Groupe Taxi"].nunique() == 1
+    assert grouped.groupby("Groupe Taxi")["Nom"].apply(set).to_dict() == {
+        1: {"Agent 0", "Agent 1", "Agent 2", "Agent 3"}
+    }
+    assert grouped["UnassignedReason"].eq("").all()
+
+
+def test_unparseable_date_is_unassigned_with_missing_date_reason():
+    df = pd.DataFrame(
+        {
+            "Date": ["04/31/2026"],
+            "SourceDispatchID": ["dispatch-A"],
+            "Nom": ["Invalid date"],
+            "Adresse": ["Ariana"],
+            "Heure": ["07:00"],
+        }
+    )
+
+    grouped, _warnings = _group_agents(df, detect_columns(df), use_ml=False)
+
+    assert grouped.loc[0, "Groupe Taxi"] == ""
+    assert grouped.loc[0, "UnassignedReason"] == "MISSING_DATE"
 
 
 def test_unknown_not_mixed_with_known():

@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from datetime import date, datetime
 from itertools import combinations
+import math
+from numbers import Real
+import re
 from typing import Any
 
 import pandas as pd
 
 from ..config import GrouperConfig, MAX_TAXI_CAPACITY, TAXI_COLUMN, UNKNOWN_ZONE
+from ..schemas import UNASSIGNED_STATUS_BY_REASON
 from .destination_cleaner import add_clean_destination_columns, validate_cleaned_destinations
 from .ml_model import load_model, score_pair, score_pairs
 from .preprocessing import ColumnMap, detect_columns
@@ -60,6 +65,8 @@ def enrich_zones(df: pd.DataFrame, address_col: str) -> pd.DataFrame:
         result["SourceSheet"] = ""
     if "BlockID" not in result.columns:
         result["BlockID"] = ""
+    if "UnassignedReason" not in result.columns:
+        result["UnassignedReason"] = ""
     return result
 
 
@@ -85,10 +92,35 @@ def group_agents(
     columns = detect_columns(clean_input)
     result = enrich_zones(clean_input, columns.address)
     result["_original_order"] = range(len(result))
+    result["UnassignedReason"] = ""
     if "Taxi" in result.columns:
         result["_InputTaxi"] = result["Taxi"]
         result["Taxi"] = ""
-    result[config.taxi_column] = pd.NA  # Initialize as NA (numeric-compatible) instead of empty string
+    result[config.taxi_column] = pd.Series("", index=result.index, dtype=object)
+    date_col = _find_existing_col(result, ["Date"])
+    if date_col is None:
+        date_values = pd.Series(pd.NaT, index=result.index, dtype="datetime64[ns]")
+    else:
+        date_values = _parse_dispatch_dates(
+            result[date_col],
+            day_first=config.day_first,
+            excel_serial_min=config.excel_date_serial_min,
+            excel_serial_max=config.excel_date_serial_max,
+        )
+    result["_DispatchDateKey"] = date_values.dt.strftime("%Y-%m-%d")
+    dispatch_id_col = _find_source_dispatch_id_column(result)
+    if dispatch_id_col is None:
+        dispatch_ids = pd.Series(None, index=result.index, dtype=object)
+    else:
+        dispatch_ids = result[dispatch_id_col].map(_clean_source_dispatch_id)
+    result["_SourceDispatchIDKey"] = dispatch_ids
+    invalid_dates = result["_DispatchDateKey"].isna()
+    invalid_dispatch_ids = result["_SourceDispatchIDKey"].isna()
+    result.loc[invalid_dates, "GroupReason"] = "MISSING_DATE"
+    result.loc[invalid_dates, "UnassignedReason"] = "MISSING_DATE"
+    result.loc[~invalid_dates & invalid_dispatch_ids, "GroupReason"] = "MISSING_DISPATCH_ID"
+    result.loc[~invalid_dates & invalid_dispatch_ids, "UnassignedReason"] = "MISSING_DISPATCH_ID"
+    result["AssignmentStatus"] = result["UnassignedReason"].map(UNASSIGNED_STATUS_BY_REASON).fillna("")
     warnings: list[str] = []
 
     model = load_model(config.model_path) if use_ml else None
@@ -101,9 +133,10 @@ def group_agents(
         warnings.append(f"{clean_validation['needs_manual_validation']} low-confidence destinations need manual validation.")
 
     all_groups: list[dict[str, Any]] = []
-    assigned: set[int] = set()
+    assigned: set[int] = set(result.index[invalid_dates | invalid_dispatch_ids])
 
-    for _block_key, block_indices in _iter_dispatch_blocks(result, columns):
+    groupable = result.loc[~(invalid_dates | invalid_dispatch_ids)]
+    for _block_key, block_indices in _iter_dispatch_blocks(groupable, columns):
         groups = _group_block(result, block_indices, columns, model, capacity)
         _apply_dispatch_preferences(result, groups, capacity)
         for group in groups:
@@ -129,8 +162,21 @@ def group_agents(
         result.loc[indices, "GroupReason"] = str(group["reason"])
         result.loc[indices, "RuleUsed"] = str(group["rule"])
 
-    result = result.sort_values([config.taxi_column, "_original_order"], kind="stable").drop(columns=["_original_order"]).reset_index(drop=True)
-    validation = validate_dispatch(result, taxi_column=config.taxi_column, capacity=capacity)
+    result = result.drop(columns=["_DispatchDateKey", "_SourceDispatchIDKey"])
+    result["_taxi_sort_key"] = pd.to_numeric(result[config.taxi_column], errors="coerce")
+    result = (
+        result.sort_values(["_taxi_sort_key", "_original_order"], kind="stable", na_position="last")
+        .drop(columns=["_taxi_sort_key", "_original_order"])
+        .reset_index(drop=True)
+    )
+    validation = validate_dispatch(
+        result,
+        taxi_column=config.taxi_column,
+        capacity=capacity,
+        day_first=config.day_first,
+        excel_serial_min=config.excel_date_serial_min,
+        excel_serial_max=config.excel_date_serial_max,
+    )
     if validation["errors"]:
         warnings.extend(validation["errors"])
     return result, warnings
@@ -244,6 +290,8 @@ def _iter_dispatch_blocks(df: pd.DataFrame, columns: ColumnMap) -> list[tuple[tu
 
 def _block_columns(df: pd.DataFrame, columns: ColumnMap) -> list[str]:
     candidates = [
+        "_DispatchDateKey",
+        "_SourceDispatchIDKey",
         columns.time,
         columns.type_course,
         "Dispatch Type",
@@ -259,6 +307,64 @@ def _block_columns(df: pd.DataFrame, columns: ColumnMap) -> list[str]:
             seen.add(col)
             block_cols.append(col)
     return block_cols
+
+
+def _find_source_dispatch_id_column(df: pd.DataFrame) -> str | None:
+    aliases = {
+        "dispatchid",
+        "sourcedispatchid",
+        "iddispatch",
+        "dispatchnumber",
+        "dispatchno",
+    }
+    for column in df.columns:
+        normalized = "".join(character.lower() for character in str(column) if character.isalnum())
+        if normalized in aliases:
+            return column
+    return None
+
+
+def _parse_dispatch_dates(
+    values: pd.Series,
+    day_first: bool = True,
+    excel_serial_min: int = 43831,
+    excel_serial_max: int = 73415,
+) -> pd.Series:
+    parsed: list[pd.Timestamp | pd.NaT] = []
+    for value in values:
+        if pd.isna(value):
+            parsed.append(pd.NaT)
+        elif isinstance(value, (datetime, date, pd.Timestamp)):
+            parsed.append(pd.Timestamp(value))
+        elif isinstance(value, Real) and not isinstance(value, bool):
+            serial = float(value)
+            parsed.append(
+                pd.to_datetime(serial, unit="D", origin="1899-12-30", errors="coerce")
+                if math.isfinite(serial) and excel_serial_min <= serial <= excel_serial_max
+                else pd.NaT
+            )
+        elif isinstance(value, str):
+            text = value.strip()
+            if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+                date_format = "%Y-%m-%d"
+            elif re.fullmatch(r"\d{2}/\d{2}/\d{4}", text):
+                date_format = "%d/%m/%Y" if day_first else "%m/%d/%Y"
+            elif re.fullmatch(r"\d{2}-\d{2}-\d{4}", text):
+                date_format = "%d-%m-%Y" if day_first else "%m-%d-%Y"
+            else:
+                parsed.append(pd.NaT)
+                continue
+            parsed.append(pd.to_datetime(text, format=date_format, errors="coerce"))
+        else:
+            parsed.append(pd.NaT)
+    return pd.Series(pd.to_datetime(parsed), index=values.index)
+
+
+def _clean_source_dispatch_id(value: object) -> str | None:
+    if pd.isna(value):
+        return None
+    cleaned = str(value).strip()
+    return cleaned or None
 
 
 def _drop_empty_agent_rows(df: pd.DataFrame) -> pd.DataFrame:
@@ -643,7 +749,14 @@ def _chunks(values: list[int], size: int) -> list[list[int]]:
     return [values[i : i + size] for i in range(0, len(values), size)]
 
 
-def validate_dispatch(df: pd.DataFrame, taxi_column: str = TAXI_COLUMN, capacity: int = MAX_TAXI_CAPACITY) -> dict[str, Any]:
+def validate_dispatch(
+    df: pd.DataFrame,
+    taxi_column: str = TAXI_COLUMN,
+    capacity: int = MAX_TAXI_CAPACITY,
+    day_first: bool = True,
+    excel_serial_min: int = 43831,
+    excel_serial_max: int = 73415,
+) -> dict[str, Any]:
     """
     Validate final taxi groups before export.
 
@@ -658,19 +771,63 @@ def validate_dispatch(df: pd.DataFrame, taxi_column: str = TAXI_COLUMN, capacity
         errors.append(f"Missing taxi column: {taxi_column}")
         return {"valid": False, "errors": errors, "warnings": warnings, "taxi_reports": taxi_reports, "dataframe": result}
 
-    empty_taxi = result[taxi_column].isna() | (result[taxi_column].astype(str).str.strip() == "")
+    unassigned = (
+        result["UnassignedReason"].fillna("").astype(str).str.strip().ne("")
+        if "UnassignedReason" in result.columns
+        else pd.Series(False, index=result.index)
+    )
+    if "AssignmentStatus" not in result.columns:
+        result["AssignmentStatus"] = ""
+    if "UnassignedReason" in result.columns:
+        result.loc[unassigned, "AssignmentStatus"] = (
+            result.loc[unassigned, "UnassignedReason"]
+            .map(UNASSIGNED_STATUS_BY_REASON)
+            .fillna(result.loc[unassigned, "UnassignedReason"])
+        )
+    if unassigned.any():
+        result[taxi_column] = result[taxi_column].astype(object)
+        result.loc[unassigned, taxi_column] = ""
+        reason_counts = result.loc[unassigned, "UnassignedReason"].value_counts().sort_index()
+        warnings.extend(
+            f"{count} row(s) unassigned: {reason}."
+            for reason, count in reason_counts.items()
+        )
+
+    assigned_rows = result.loc[~unassigned]
+    empty_taxi = assigned_rows[taxi_column].isna() | (assigned_rows[taxi_column].astype(str).str.strip() == "")
     if empty_taxi.any():
         errors.append(f"{int(empty_taxi.sum())} rows have empty taxi values.")
 
-    duplicate_key_cols = [col for col in ["Date", "Matricule", "Nom - Prénom", "Nom - Prenom", "Adresse"] if col in result.columns]
+    duplicate_key_cols = [col for col in ["Date", "Matricule", "Nom - Prénom", "Nom - Prenom", "Adresse"] if col in assigned_rows.columns]
     if duplicate_key_cols:
-        duplicated = result.duplicated(subset=duplicate_key_cols, keep=False)
+        duplicated = assigned_rows.duplicated(subset=duplicate_key_cols, keep=False)
         if duplicated.any():
             warnings.append(f"{int(duplicated.sum())} rows look duplicated by {', '.join(duplicate_key_cols)}.")
 
-    for taxi, group in result.groupby(taxi_column, sort=False, dropna=False):
+    for taxi, group in assigned_rows.groupby(taxi_column, sort=False, dropna=False):
         taxi_errors: list[str] = []
         taxi_warnings: list[str] = []
+        date_col = _find_existing_col(group, ["Date"])
+        if date_col is not None:
+            parsed_dates = _parse_dispatch_dates(
+                group[date_col],
+                day_first=day_first,
+                excel_serial_min=excel_serial_min,
+                excel_serial_max=excel_serial_max,
+            )
+            if parsed_dates.isna().any():
+                taxi_errors.append("contains missing or invalid date")
+            dates = sorted(parsed_dates.dropna().dt.strftime("%Y-%m-%d").unique().tolist())
+            if len(dates) > 1:
+                taxi_errors.append(f"contains multiple dates: {', '.join(dates)}")
+        dispatch_id_col = _find_source_dispatch_id_column(group)
+        if dispatch_id_col is not None:
+            dispatch_ids = group[dispatch_id_col].map(_clean_source_dispatch_id)
+            if dispatch_ids.isna().any():
+                taxi_errors.append("contains missing source dispatch id")
+            source_ids = sorted(dispatch_ids.dropna().unique().tolist())
+            if len(source_ids) > 1:
+                taxi_errors.append(f"contains multiple source dispatch ids: {', '.join(source_ids)}")
         zones = sorted(str(z) for z in group.get("Zone", pd.Series(dtype=str)).dropna().unique())
         destinations = sorted(str(z) for z in group.get("DetectedDestination", pd.Series(dtype=str)).dropna().unique())
         times = sorted(str(z) for z in _series_for_candidates(group, ["Heure d'arrivée", "Heure d'arrivee", "Heure", "Heure de départ"]).dropna().unique())
@@ -713,20 +870,20 @@ def validate_dispatch(df: pd.DataFrame, taxi_column: str = TAXI_COLUMN, capacity
             }
         )
 
-    non_empty = _drop_empty_agent_rows(result)
-    if len(non_empty) != len(result):
-        errors.append(f"{len(result) - len(non_empty)} empty agent rows are present in dispatch output.")
-    matricule_col = _find_existing_col(result, ["Matricule"])
+    non_empty = _drop_empty_agent_rows(assigned_rows)
+    if len(non_empty) != len(assigned_rows):
+        errors.append(f"{len(assigned_rows) - len(non_empty)} empty agent rows are present in dispatch output.")
+    matricule_col = _find_existing_col(assigned_rows, ["Matricule"])
     if matricule_col:
-        values = result[matricule_col].astype(str).str.strip()
+        values = assigned_rows[matricule_col].astype(str).str.strip()
         values = values[values != ""]
         duplicated_matricules = values[values.duplicated(keep=False)]
         if not duplicated_matricules.empty:
             errors.append(f"Duplicated matricules found: {sorted(duplicated_matricules.unique())[:20]}")
-    if len(result) and taxi_reports:
-        theoretical_min = (len(result) + capacity - 1) // capacity
+    if len(assigned_rows) and taxi_reports:
+        theoretical_min = (len(assigned_rows) + capacity - 1) // capacity
         if len(taxi_reports) > max(theoretical_min * 2, theoretical_min + 8):
-            warnings.append(f"Taxi count looks high: {len(taxi_reports)} taxis for {len(result)} agents. Theoretical minimum is {theoretical_min}.")
+            warnings.append(f"Taxi count looks high: {len(taxi_reports)} taxis for {len(assigned_rows)} agents. Theoretical minimum is {theoretical_min}.")
 
     return {
         "valid": not errors,

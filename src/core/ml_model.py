@@ -19,7 +19,8 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
 from sklearn.model_selection import train_test_split
 
-from ..config import DEFAULT_CONFIG_PATH, DEFAULT_MODEL_PATH, UNKNOWN_ZONE
+from ..config import DEFAULT_CANDIDATE_MODEL_PATH, DEFAULT_CONFIG_PATH, DEFAULT_MODEL_PATH, UNKNOWN_ZONE
+from .model_storage import ensure_model_write_allowed, save_model_artifact, write_model_metadata
 from .preprocessing import ColumnMap, detect_columns, load_excel
 from .zones import detect_zone, normalize_address, normalize_text, zones_are_compatible
 
@@ -252,7 +253,10 @@ def prepare_historique_pairwise_examples(df: pd.DataFrame, negative_multiplier: 
     return np.asarray(features, dtype=float), np.asarray(labels, dtype=int)
 
 
-def train_model_from_historique_excel(file_path: str, output_dir: str = "models") -> dict:
+def train_model_from_historique_excel(
+    file_path: str,
+    output_dir: str | Path = DEFAULT_CANDIDATE_MODEL_PATH.parent,
+) -> dict:
     """
     Train the taxi grouping model from a historical Excel file that follows
     the Historique.xlsx structure.
@@ -267,6 +271,7 @@ def train_model_from_historique_excel(file_path: str, output_dir: str = "models"
     """
     path = Path(file_path)
     output = Path(output_dir)
+    ensure_model_write_allowed(output)
     cleaned = load_historique_excel(path)
     x_all, y_all = prepare_historique_pairwise_examples(cleaned)
 
@@ -302,10 +307,17 @@ def train_model_from_historique_excel(file_path: str, output_dir: str = "models"
         "sheets": sorted(cleaned["SourceSheet"].unique().tolist()),
     }
 
-    output.mkdir(parents=True, exist_ok=True)
-    joblib.dump(model, output / DEFAULT_MODEL_PATH.name)
-    (output / "training_report.json").write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+    save_model_artifact(model, output, DEFAULT_MODEL_PATH.name)
+    write_model_metadata(output / "training_report.json", report)
     return report
+
+
+def train_candidate_from_historique_excel(file_path: str | Path) -> dict[str, Any]:
+    """Train the packaged operator workflow's candidate without activating it."""
+    return train_model_from_historique_excel(
+        str(file_path),
+        DEFAULT_CANDIDATE_MODEL_PATH.parent,
+    )
 
 
 def _value(row: pd.Series, col: str | None) -> str:
@@ -365,9 +377,13 @@ def prepare_training_examples(df: pd.DataFrame, columns: ColumnMap) -> tuple[np.
     return np.asarray(features, dtype=float), np.asarray(labels, dtype=int)
 
 
-def train_from_folder(data_dir: str | Path, output_dir: str | Path) -> dict[str, Any]:
+def train_from_folder(
+    data_dir: str | Path,
+    output_dir: str | Path = DEFAULT_CANDIDATE_MODEL_PATH.parent,
+) -> dict[str, Any]:
     data_dir = Path(data_dir)
     output_dir = Path(output_dir)
+    ensure_model_write_allowed(output_dir)
     files = sorted([*data_dir.glob("*.xlsx"), *data_dir.glob("*.xls")])
     if not files:
         raise FileNotFoundError(f"No Excel training files found in {data_dir}")
@@ -401,9 +417,8 @@ def train_from_folder(data_dir: str | Path, output_dir: str | Path) -> dict[str,
         "model": "RandomForestClassifier",
     }
 
-    output_dir.mkdir(parents=True, exist_ok=True)
-    joblib.dump(model, output_dir / DEFAULT_MODEL_PATH.name)
-    (output_dir / DEFAULT_CONFIG_PATH.name).write_text(json.dumps(metrics, indent=2), encoding="utf-8")
+    save_model_artifact(model, output_dir, DEFAULT_MODEL_PATH.name)
+    write_model_metadata(output_dir / DEFAULT_CONFIG_PATH.name, metrics)
     return metrics
 
 

@@ -4,15 +4,17 @@
 import requests
 import json
 from pathlib import Path
+from api_test_support import api_auth_headers
 
 sheet_id = "1O5K9a7d5l4KI11ntGzypTqD5cji6ny3RwThPM0S9wvI"
 base_url = "http://127.0.0.1:8002"
+api_headers = api_auth_headers()
 
 print("\n" + "="*70)
 print("STEP 1: Get initial cache state")
 print("="*70)
 
-cache_resp = requests.get(f"{base_url}/api/debug/training-cache")
+cache_resp = requests.get(f"{base_url}/api/debug/training-cache", headers=api_headers)
 cache_before = cache_resp.json()['pre_correction_cache_size']
 print(f"Cache size before validation: {cache_before}")
 
@@ -22,7 +24,8 @@ print("="*70)
 
 val_resp = requests.post(
     f"{base_url}/api/validate-sheet",
-    json={"sheet_id": sheet_id}
+    json={"sheet_id": sheet_id},
+    headers=api_headers,
 )
 
 if val_resp.status_code == 200:
@@ -75,7 +78,7 @@ print("\n" + "="*70)
 print("STEP 4: Check cache state after validation")
 print("="*70)
 
-cache_resp2 = requests.get(f"{base_url}/api/debug/training-cache")
+cache_resp2 = requests.get(f"{base_url}/api/debug/training-cache", headers=api_headers)
 cache_after = cache_resp2.json()['pre_correction_cache_size']
 print(f"Cache size after validation: {cache_after}")
 print(f"Cache state: {'✓ Still populated' if cache_after > 0 else '✗ Was cleared'}")

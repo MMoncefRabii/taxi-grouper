@@ -1,5 +1,11 @@
 # Google Picker Debugging Guide
 
+> **Legacy reference only:** The React/Vite frontend is unsupported, is not to
+> be relaunched, and receives HTTP 401 on protected API routes. This guide
+> describes its retired Picker flow; the `frontend/` folder is retained only
+> as a reference for the later Fleet Tracker port. Do not follow the frontend
+> debugging instructions below.
+
 ## Overview
 This guide helps diagnose issues with the Google Picker integration in Taxi Grouper's frontend. The Picker is used to select and upload Google Sheets.
 
@@ -197,7 +203,7 @@ Should both be `true` after picker loads.
 ### Issue 5: "Invalid grant" error in backend logs
 **Cause:** Refresh token expired or revoked.
 **Solution:**
-1. Delete stored credentials: `rm data/google_oauth_tokens.json` (if using file storage)
+1. Delete stored credentials: `rm src/data/google_oauth_tokens.json` (if using file storage)
 2. Sign out and sign back in
 3. Check backend logs for detailed error
 

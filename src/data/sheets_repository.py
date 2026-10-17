@@ -7,9 +7,10 @@ import tempfile
 import threading
 import urllib.parse
 import urllib.request
+import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, List, NamedTuple, Optional
 
 import logging
 import pandas as pd
@@ -20,6 +21,8 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 
 from ..config import get_settings
+from ..core.preprocessing import add_dispatch_block_metadata, is_repeated_header_row, load_dispatch_excel
+from ..schemas import UNASSIGNED_STATUS_BY_REASON
 
 SETTINGS = get_settings()
 DATA_DIR = Path(__file__).resolve().parents[1] / "data"
@@ -33,6 +36,7 @@ CLIENT_ID = SETTINGS.google_client_id
 CLIENT_SECRET = SETTINGS.google_client_secret
 REDIRECT_URI = SETTINGS.google_oauth_redirect_uri
 FRONTEND_ORIGIN = SETTINGS.frontend_origin
+OUTPUT_FOLDER_ID = SETTINGS.google_output_folder_id
 CLIENT_SHEET_NAME = "Taxi Grouper Client Output"
 
 _TOKEN_FILE_LOCK = threading.Lock()
@@ -66,6 +70,7 @@ CLIENT_SHEET_COLUMNS = [
     "Heure d'arrivée",
     "Groupe Taxi",
     "PRIX",
+    "Statut",
 ]
 CLIENT_HEADER_FILL = "#000000"
 CLIENT_HEADER_TEXT_COLOR = "#FFA500"
@@ -75,6 +80,13 @@ CLIENT_DATA_TEXT_COLOR = "#000000"
 CLIENT_TAXI_TEXT_COLOR = "#FF0000"
 CLIENT_TAXI_ALIGNMENT = "RIGHT"
 CLIENT_HEADER_ALIGNMENT = "CENTER"
+
+
+class GroupedSheetOutputs(NamedTuple):
+    client_sheet_id: str
+    client_sheet_url: str
+    internal_sheet_id: str
+    internal_sheet_url: str
 CLIENT_HEADER_VERTICAL_ALIGNMENT = "MIDDLE"
 CLIENT_BORDER_COLOR = "#000000"
 CLIENT_BORDER_STYLE = "SOLID_MEDIUM"
@@ -301,8 +313,29 @@ def _read_google_sheet_to_dataframe(sheet_id: str, sheet_title: str | None = Non
         raise RuntimeError("Spreadsheet must contain a header row and at least one data row.")
 
     headers = [str(value) for value in values[0]]
-    rows = [row + [""] * (len(headers) - len(row)) for row in values[1:]]
-    return pd.DataFrame(rows, columns=headers)
+    rows: list[list[str]] = []
+    block_ordinals: list[int] = []
+    block_ordinal = 1
+    for row in values[1:]:
+        if is_repeated_header_row(row):
+            block_ordinal += 1
+            continue
+        padded_row = row + [""] * (len(headers) - len(row))
+        if not any(str(value).strip() for value in padded_row):
+            continue
+        rows.append(padded_row)
+        block_ordinals.append(block_ordinal)
+
+    result = pd.DataFrame(rows, columns=headers)
+    sheet_gid = title_to_gid[sheet_title]
+    result["SourceSheet"] = str(sheet_gid)
+    result["BlockID"] = [f"{sheet_gid}_{ordinal - 1}" for ordinal in block_ordinals]
+    return add_dispatch_block_metadata(
+        result,
+        source_id=sheet_id,
+        sheet_name=str(sheet_gid),
+        block_ordinals=block_ordinals,
+    )
 
 
 def read_sheet_to_dataframe(sheet_id: str, sheet_title: str | None = None) -> pd.DataFrame:
@@ -331,21 +364,43 @@ def _forward_fill_grouped_taxi_column(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def write_grouped_df_to_sheet(sheet_id: str, grouped_df: pd.DataFrame) -> str:
-    """
-    Write grouped results to a Google Sheet with two tabs:
-    - Client tab: Contains only approved columns for client viewing
-    - Internal tab: Contains all columns for internal review
-    """
-    metadata = _get_file_metadata(sheet_id)
-    target_sheet_id, target_sheet_url, created_new_spreadsheet = _ensure_destination_spreadsheet(
-        sheet_id,
-        metadata.get("name", "Taxi Grouper Output"),
-    )
+def write_grouped_df_to_sheet(
+    grouped_df: pd.DataFrame,
+    *,
+    source_name: str = "Taxi Grouper",
+    client_sheet_id: str | None = None,
+    internal_sheet_id: str | None = None,
+    overwrite: bool = False,
+) -> GroupedSheetOutputs:
+    """Write client-safe and internal results to distinct output spreadsheets."""
+    output_ids_provided = client_sheet_id is not None or internal_sheet_id is not None
+    if output_ids_provided and (not client_sheet_id or not internal_sheet_id):
+        raise ValueError("Both client and internal output spreadsheet IDs are required.")
+    if output_ids_provided != overwrite:
+        raise ValueError("Explicit output spreadsheet IDs and overwrite=True must be provided together.")
 
-    client_sheet_gid = _ensure_sheet(target_sheet_id, CLIENT_SHEET_NAME, created_new_spreadsheet)
-    internal_sheet_gid = _ensure_sheet(target_sheet_id, INTERNAL_SHEET_NAME, created_new_spreadsheet)
-    _set_sheet_hidden(target_sheet_id, internal_sheet_gid, hidden=True)
+    if client_sheet_id and internal_sheet_id:
+        if client_sheet_id == internal_sheet_id:
+            raise ValueError("Client and internal outputs must use different spreadsheets.")
+    output_folder_id = OUTPUT_FOLDER_ID
+    run_id = uuid.uuid4().hex[:12]
+
+    if overwrite:
+        if client_sheet_id is None or internal_sheet_id is None:
+            raise ValueError("Explicit client and internal output IDs are required for overwrite.")
+        client_id = client_sheet_id
+        internal_id = internal_sheet_id
+    else:
+        client_title = f"{Path(source_name).stem} - Client Output - {run_id}"
+        internal_title = f"{Path(source_name).stem} - Internal Output - {run_id}"
+        client_id, _ = _create_google_sheet(client_title, output_folder_id)
+        internal_id, _ = _create_google_sheet(internal_title, output_folder_id)
+
+    if client_id == internal_id:
+        raise RuntimeError("Client and internal outputs must use different spreadsheets.")
+
+    client_gid = _ensure_output_tab(client_id, CLIENT_SHEET_NAME, newly_created=not overwrite)
+    internal_gid = _ensure_output_tab(internal_id, INTERNAL_SHEET_NAME, newly_created=not overwrite)
 
     client_values = [CLIENT_SHEET_COLUMNS]
     for _, row in grouped_df.iterrows():
@@ -358,17 +413,21 @@ def write_grouped_df_to_sheet(sheet_id: str, grouped_df: pd.DataFrame) -> str:
 
     group_ranges = _compute_group_ranges(client_values)
     _collapse_grouped_taxi_values(client_values)
-    _write_values_to_sheet(target_sheet_id, CLIENT_SHEET_NAME, client_values)
+    _write_values_to_sheet(client_id, CLIENT_SHEET_NAME, client_values)
     # Apply client-facing formatting with a single consistent group band and merged taxi cells.
     try:
-        _apply_client_sheet_formatting(target_sheet_id, client_sheet_gid, client_values, group_ranges)
+        _apply_client_sheet_formatting(client_id, client_gid, client_values, group_ranges)
     except Exception:
-        # Formatting is a best-effort enhancement; do not break the main flow on failure
-        pass
+        logger.warning("Could not apply client spreadsheet formatting", exc_info=True)
 
-    _write_values_to_sheet(target_sheet_id, INTERNAL_SHEET_NAME, internal_values)
+    _write_values_to_sheet(internal_id, INTERNAL_SHEET_NAME, internal_values)
 
-    return f"https://docs.google.com/spreadsheets/d/{target_sheet_id}/edit#gid={client_sheet_gid}"
+    return GroupedSheetOutputs(
+        client_sheet_id=client_id,
+        client_sheet_url=f"https://docs.google.com/spreadsheets/d/{client_id}/edit#gid={client_gid}",
+        internal_sheet_id=internal_id,
+        internal_sheet_url=f"https://docs.google.com/spreadsheets/d/{internal_id}/edit#gid={internal_gid}",
+    )
 
 
 def build_drive_service():
@@ -519,31 +578,26 @@ def get_file_metadata(file_id: str) -> dict[str, Any]:
     return _get_file_metadata(file_id)
 
 
-def _create_google_sheet(title: str) -> tuple[str, str]:
-    """Create a new Google Sheet file in Drive and return its ID and URL."""
+def _create_google_sheet(title: str, folder_id: str | None = None) -> tuple[str, str]:
+    """Create a new Google Sheet in the configured output folder."""
+    folder_id = folder_id or OUTPUT_FOLDER_ID
+    if not folder_id:
+        raise RuntimeError(
+            "Google output folder is not configured. Set GOOGLE_OUTPUT_FOLDER_ID."
+        )
     drive = build_drive_service()
     file_metadata = {
         "name": title,
         "mimeType": "application/vnd.google-apps.spreadsheet",
+        "parents": [folder_id],
     }
-    created = drive.files().create(body=file_metadata, fields="id").execute()
+    created = drive.files().create(
+        body=file_metadata,
+        fields="id",
+        supportsAllDrives=True,
+    ).execute()
     spreadsheet_id = created["id"]
     return spreadsheet_id, f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit"
-
-
-def _is_google_sheet_file(file_id: str) -> bool:
-    metadata = _get_file_metadata(file_id)
-    return metadata.get("mimeType") == "application/vnd.google-apps.spreadsheet"
-
-
-def _ensure_destination_spreadsheet(source_file_id: str, source_name: str) -> tuple[str, str, bool]:
-    """Return a Google Sheets target file id, URL, and a flag indicating whether a new spreadsheet was created."""
-    if _is_google_sheet_file(source_file_id):
-        return source_file_id, f"https://docs.google.com/spreadsheets/d/{source_file_id}/edit", False
-
-    target_title = f"{Path(source_name).stem} - Taxi Grouper Results"
-    spreadsheet_id, spreadsheet_url = _create_google_sheet(target_title)
-    return spreadsheet_id, spreadsheet_url, True
 
 
 def _get_spreadsheet_sheets(spreadsheet_id: str) -> tuple[dict[str, int], list[dict[str, Any]]]:
@@ -583,6 +637,18 @@ def _ensure_sheet(spreadsheet_id: str, sheet_title: str, newly_created_spreadshe
     return response["replies"][0]["addSheet"]["properties"]["sheetId"]
 
 
+def _ensure_output_tab(spreadsheet_id: str, sheet_title: str, newly_created: bool) -> int:
+    """Prepare the sole output tab, rejecting reused spreadsheets with extra tabs."""
+    title_to_gid, sheets_list = _get_spreadsheet_sheets(spreadsheet_id)
+    if newly_created:
+        return _ensure_sheet(spreadsheet_id, sheet_title, newly_created_spreadsheet=True)
+    if len(sheets_list) != 1 or sheet_title not in title_to_gid:
+        raise ValueError(
+            f"Overwrite target {spreadsheet_id} must contain only the '{sheet_title}' tab."
+        )
+    return title_to_gid[sheet_title]
+
+
 def _build_client_row(row: pd.Series) -> list[str]:
     def pref(candidates: list[str]) -> str:
         for candidate in candidates:
@@ -593,6 +659,10 @@ def _build_client_row(row: pd.Series) -> list[str]:
     taxi_value = row.get("Groupe Taxi") if "Groupe Taxi" in row else row.get("Taxi")
     if pd.isna(taxi_value):
         taxi_value = ""
+    status = row.get("AssignmentStatus")
+    if pd.isna(status) or not str(status).strip():
+        reason = str(row.get("UnassignedReason", "") or "")
+        status = UNASSIGNED_STATUS_BY_REASON.get(reason, "")
 
     return [
         pref(["Date"]),
@@ -605,6 +675,7 @@ def _build_client_row(row: pd.Series) -> list[str]:
         pref(["Heure d'arrivée", "Heure", "Heure de départ", "Heure d'arrivee"]),
         str(taxi_value),
         pref(["PRIX", "Prix", "Price"]),
+        str(status),
     ]
 
 
@@ -617,24 +688,6 @@ def _write_values_to_sheet(spreadsheet_id: str, sheet_title: str, values: list[l
         valueInputOption="RAW",
         body={"values": values},
     ).execute()
-
-
-def _set_sheet_hidden(spreadsheet_id: str, sheet_id: int, hidden: bool = True) -> None:
-    sheets = build_sheets_service()
-    request_body = {
-        "requests": [
-            {
-                "updateSheetProperties": {
-                    "properties": {
-                        "sheetId": sheet_id,
-                        "hidden": hidden,
-                    },
-                    "fields": "hidden",
-                }
-            }
-        ]
-    }
-    sheets.spreadsheets().batchUpdate(spreadsheetId=spreadsheet_id, body=request_body).execute()
 
 
 def _load_color_palette() -> List[str]:
@@ -972,11 +1025,22 @@ def ensure_google_sheet(file_id: str) -> tuple[str, str]:
     return _convert_to_google_sheet(file_id, metadata.get("name"))
 
 
-def create_google_sheet_from_dataframe(df: pd.DataFrame, title: str = "Taxi Grouper Export") -> tuple[str, str]:
-    """Create a new Google Sheet in Drive and write the provided DataFrame into it."""
-    spreadsheet_id, spreadsheet_url = _create_google_sheet(title)
-    write_grouped_df_to_sheet(spreadsheet_id, df)
-    return spreadsheet_id, spreadsheet_url
+def create_google_sheet_from_dataframe(
+    df: pd.DataFrame,
+    title: str = "Taxi Grouper Export",
+    *,
+    client_sheet_id: str | None = None,
+    internal_sheet_id: str | None = None,
+    overwrite: bool = False,
+) -> GroupedSheetOutputs:
+    """Write a DataFrame to separate client and internal Google spreadsheets."""
+    return write_grouped_df_to_sheet(
+        df,
+        source_name=title,
+        client_sheet_id=client_sheet_id,
+        internal_sheet_id=internal_sheet_id,
+        overwrite=overwrite,
+    )
 
 
 def _download_file(file_id: str, dest_path: str) -> None:
@@ -990,10 +1054,13 @@ def _download_file(file_id: str, dest_path: str) -> None:
             status, done = downloader.next_chunk()
 
 
-def _excel_to_dataframe(file_path: str) -> pd.DataFrame:
+def _excel_to_dataframe(file_path: str, source_id: str | None = None) -> pd.DataFrame:
     """Convert an Excel file to a pandas DataFrame."""
-    df = pd.read_excel(file_path, sheet_name=0)
-    return df
+    return load_dispatch_excel(
+        file_path,
+        read_all_sheets=False,
+        source_id=source_id or Path(file_path).name,
+    )
 
 
 def read_from_drive_file(file_id: str, sheet_title: str | None = None) -> pd.DataFrame:
@@ -1018,10 +1085,7 @@ def read_from_drive_file(file_id: str, sheet_title: str | None = None) -> pd.Dat
         with tempfile.TemporaryDirectory() as tmpdir:
             temp_file = Path(tmpdir) / filename
             _download_file(file_id, str(temp_file))
-            df = _excel_to_dataframe(str(temp_file))
-            # Ensure columns are strings and first row becomes headers if needed
-            df.columns = [str(col) for col in df.columns]
-            return df
+            return _excel_to_dataframe(str(temp_file), source_id=filename)
     
     raise ValueError(f"Unsupported file type: {mime_type}. Please use a Google Sheet or Excel file.")
 

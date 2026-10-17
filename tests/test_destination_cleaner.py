@@ -63,6 +63,7 @@ def test_grouping_uses_clean_destination_columns():
     df = pd.DataFrame(
         {
             "Date": ["2026-05-29", "2026-05-29"],
+            "SourceDispatchID": ["dispatch-A", "dispatch-A"],
             "Matricule": [1, 2],
             "Nom - Prénom": ["A", "B"],
             "Opération": ["OP", "OP"],

@@ -1,7 +1,7 @@
 """
 FastAPI backend for Taxi Grouper - wraps existing grouping logic without modifications.
 
-Run with: uvicorn api:app --reload
+Run with: uvicorn src.api.service:app --reload
 """
 
 import json
@@ -17,12 +17,14 @@ logging.basicConfig(level=logging.INFO)
 
 import pandas as pd
 from fastapi import BackgroundTasks, FastAPI, File, UploadFile, Query, HTTPException, Body
-from fastapi.responses import StreamingResponse, RedirectResponse
+from fastapi.responses import JSONResponse, StreamingResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from src.core.preprocessing import load_dispatch_excel, detect_columns, filter_dataframe
 from src.core.grouper import group_agents, validate_dispatch
+from src.api.authentication import ApiKeyAuthMiddleware
+from src.api.launcher import get_api_host
 from src.adapters.exporter import export_excel
 from src.config import TAXI_COLUMN, MAX_TAXI_CAPACITY, UNKNOWN_ZONE, get_settings
 from src.data.sheets_repository import (
@@ -53,11 +55,88 @@ from src.data.training_data_manager import (
     _get_training_corrections_path,
 )
 
+class GroupUploadRequestTooLarge(Exception):
+    pass
+
+
+class GroupUploadSizeLimitMiddleware:
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or scope["method"] != "POST" or scope["path"] != "/api/group":
+            await self.app(scope, receive, send)
+            return
+
+        max_upload_size = get_settings().max_upload_size_bytes
+        max_request_size = max_upload_size + UPLOAD_MULTIPART_OVERHEAD_BYTES
+        headers = dict(scope.get("headers", []))
+        content_length = headers.get(b"content-length")
+        if content_length is not None:
+            try:
+                request_size = int(content_length)
+            except ValueError:
+                response = JSONResponse(status_code=400, content={"detail": "Invalid Content-Length header."})
+                await response(scope, receive, send)
+                return
+            if request_size < 0:
+                response = JSONResponse(status_code=400, content={"detail": "Invalid Content-Length header."})
+                await response(scope, receive, send)
+                return
+            if request_size > max_request_size:
+                await self._too_large_response(scope, receive, send, max_upload_size)
+                return
+
+        received_size = 0
+        request_too_large = False
+
+        async def limited_receive():
+            nonlocal received_size, request_too_large
+            message = await receive()
+            if message["type"] == "http.request":
+                received_size += len(message.get("body", b""))
+                if received_size > max_request_size:
+                    request_too_large = True
+                    raise GroupUploadRequestTooLarge
+            return message
+
+        async def limited_send(message):
+            if not request_too_large:
+                await send(message)
+
+        try:
+            await self.app(scope, limited_receive, limited_send)
+        except GroupUploadRequestTooLarge:
+            pass
+        if request_too_large:
+            await self._too_large_response(scope, receive, send, max_upload_size)
+
+    @staticmethod
+    async def _too_large_response(scope, receive, send, max_upload_size):
+        response = JSONResponse(
+            status_code=413,
+            content={
+                "detail": (
+                    "Uploaded request exceeds the maximum allowed file size of "
+                    f"{max_upload_size} bytes."
+                )
+            },
+        )
+        await response(scope, receive, send)
+
+
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 _retrain_lock = threading.Lock()
 _retrain_task_scheduled = False
+UPLOAD_CHUNK_SIZE = 64 * 1024
+UPLOAD_MULTIPART_OVERHEAD_BYTES = 64 * 1024
+_UPLOAD_SIGNATURES = {
+    ".xlsx": b"PK",
+    ".ods": b"PK",
+    ".xls": b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1",
+}
 
 class SheetInfoRequest(BaseModel):
     sheet_id: str
@@ -66,6 +145,9 @@ class SheetInfoRequest(BaseModel):
 class SaveToDriveRequest(BaseModel):
     grouped_data: list[dict]
     sheet_name: str | None = None
+    client_sheet_id: str | None = None
+    internal_sheet_id: str | None = None
+    overwrite_output: bool = False
 
 settings = get_settings()
 
@@ -112,6 +194,8 @@ app = FastAPI(
     description="Backend API for taxi grouping optimization - Grand Tunis",
 )
 
+app.add_middleware(GroupUploadSizeLimitMiddleware)
+app.add_middleware(ApiKeyAuthMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.allowed_origins,
@@ -183,11 +267,23 @@ async def group_sheet_endpoint(
     type_course_filter: str | None = Body(None, description="Optional course type ('Ramassage' or 'Retour')"),
     operation_filter: str | None = Body(None, description="Optional client/operation filter"),
     use_ml: bool = Body(True, description="Use ML-assisted ordering (default True)"),
+    client_sheet_id: str | None = Body(None, description="Existing client output ID for explicit overwrite"),
+    internal_sheet_id: str | None = Body(None, description="Existing internal output ID for explicit overwrite"),
+    overwrite_output: bool = Body(False, description="Overwrite the explicitly supplied output spreadsheets"),
 ):
-    """Group agents from a Google Sheet and write results into a results worksheet."""
+    """Group a source sheet and write results to separate client and internal spreadsheets."""
     if not sheet_id:
         raise HTTPException(status_code=400, detail="sheet_id is required")
+    output_ids_provided = client_sheet_id is not None or internal_sheet_id is not None
+    if output_ids_provided and (not client_sheet_id or not internal_sheet_id):
+        raise HTTPException(status_code=400, detail="Both output spreadsheet IDs are required for overwrite.")
+    if output_ids_provided != overwrite_output:
+        raise HTTPException(
+            status_code=400,
+            detail="Explicit output spreadsheet IDs and overwrite_output=true must be provided together.",
+        )
 
+    original_source_id = sheet_id
     converted_from_office_file = False
     converted_sheet_url = None
     try:
@@ -228,13 +324,30 @@ async def group_sheet_endpoint(
     grouped, warnings = group_agents(df_filtered, columns=columns, use_ml=use_ml)
     validation = validate_dispatch(grouped, taxi_column=TAXI_COLUMN, capacity=MAX_TAXI_CAPACITY)
 
+    source_sheet_ids = {original_source_id, sheet_id}
+    if client_sheet_id and internal_sheet_id:
+        if client_sheet_id == internal_sheet_id:
+            raise HTTPException(status_code=400, detail="Client and internal outputs must be different spreadsheets.")
+        if client_sheet_id in source_sheet_ids or internal_sheet_id in source_sheet_ids:
+            raise HTTPException(
+                status_code=400,
+                detail="Output spreadsheet IDs must not match the source or its converted copy.",
+            )
+
     try:
-        sheet_url = write_grouped_df_to_sheet(sheet_id, grouped)
+        source_metadata = get_file_metadata(original_source_id)
+        outputs = write_grouped_df_to_sheet(
+            grouped,
+            source_name=source_metadata.get("name", "Taxi Grouper"),
+            client_sheet_id=client_sheet_id,
+            internal_sheet_id=internal_sheet_id,
+            overwrite=overwrite_output,
+        )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to write grouped results to Google Sheet: {str(exc)}")
 
     # Store pre-correction state so we can diff corrections later
-    store_pre_correction_state(sheet_id, grouped)
+    store_pre_correction_state(outputs.client_sheet_id, grouped)
 
     grouped_json = json.loads(grouped.to_json(orient="records", date_format="iso"))
     stats = {
@@ -244,7 +357,12 @@ async def group_sheet_endpoint(
     }
 
     response = {
-        "sheet_url": sheet_url,
+        "sheet_url": outputs.client_sheet_url,
+        "sheet_id": outputs.client_sheet_id,
+        "client_sheet_url": outputs.client_sheet_url,
+        "internal_sheet_url": outputs.internal_sheet_url,
+        "client_sheet_id": outputs.client_sheet_id,
+        "internal_sheet_id": outputs.internal_sheet_id,
         "grouped_data": grouped_json,
         "stats": stats,
         "warnings": warnings,
@@ -540,9 +658,19 @@ async def debug_training_cache():
 
 @app.post("/api/save-drive")
 async def save_drive_endpoint(request: SaveToDriveRequest):
-    """Save grouped results directly to Google Drive as a new Google Sheet."""
+    """Save grouped results to separate client and internal spreadsheets."""
     if not request.grouped_data:
         raise HTTPException(status_code=400, detail="grouped_data must not be empty")
+    output_ids_provided = request.client_sheet_id is not None or request.internal_sheet_id is not None
+    if output_ids_provided and (not request.client_sheet_id or not request.internal_sheet_id):
+        raise HTTPException(status_code=400, detail="Both output spreadsheet IDs are required for overwrite.")
+    if output_ids_provided != request.overwrite_output:
+        raise HTTPException(
+            status_code=400,
+            detail="Explicit output spreadsheet IDs and overwrite_output=true must be provided together.",
+        )
+    if request.client_sheet_id == request.internal_sheet_id and output_ids_provided:
+        raise HTTPException(status_code=400, detail="Client and internal outputs must be different spreadsheets.")
 
     try:
         df = pd.DataFrame(request.grouped_data)
@@ -553,11 +681,24 @@ async def save_drive_endpoint(request: SaveToDriveRequest):
 
     try:
         sheet_name = request.sheet_name or "Taxi Grouper Export"
-        sheet_id, sheet_url = create_google_sheet_from_dataframe(df, title=sheet_name)
+        outputs = create_google_sheet_from_dataframe(
+            df,
+            title=sheet_name,
+            client_sheet_id=request.client_sheet_id,
+            internal_sheet_id=request.internal_sheet_id,
+            overwrite=request.overwrite_output,
+        )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to save grouped results to Drive: {str(exc)}")
 
-    return {"sheet_url": sheet_url, "sheet_id": sheet_id}
+    return {
+        "sheet_url": outputs.client_sheet_url,
+        "sheet_id": outputs.client_sheet_id,
+        "client_sheet_url": outputs.client_sheet_url,
+        "internal_sheet_url": outputs.internal_sheet_url,
+        "client_sheet_id": outputs.client_sheet_id,
+        "internal_sheet_id": outputs.internal_sheet_id,
+    }
 
 
 @app.post("/api/group")
@@ -586,18 +727,47 @@ async def group_agents_endpoint(
     - warnings: list of issues (e.g., low-confidence destinations)
     - validation: status and per-taxi validation reports
     """
-    temp_file = None
+    temp_file: Path | None = None
     try:
-        # Write uploaded file to temporary location (load_dispatch_excel requires a file path)
-        temp_handle = tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx")
-        temp_file = Path(temp_handle.name)
-        content = await file.read()
-        temp_handle.write(content)
-        temp_handle.close()
+        filename = file.filename or ""
+        extension = Path(filename).suffix.lower()
+        expected_signature = _UPLOAD_SIGNATURES.get(extension)
+        if expected_signature is None:
+            raise HTTPException(
+                status_code=415,
+                detail="Unsupported upload type. Use an .xlsx, .xls, or .ods workbook.",
+            )
+
+        max_upload_size = get_settings().max_upload_size_bytes
+        total_size = 0
+        signature = b""
+        with tempfile.NamedTemporaryFile(delete=False, suffix=extension) as temp_handle:
+            temp_file = Path(temp_handle.name)
+            while chunk := await file.read(UPLOAD_CHUNK_SIZE):
+                total_size += len(chunk)
+                if total_size > max_upload_size:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"Uploaded file exceeds the maximum allowed size of {max_upload_size} bytes.",
+                    )
+                if len(signature) < len(expected_signature):
+                    signature += chunk[: len(expected_signature) - len(signature)]
+                if len(signature) == len(expected_signature) and not signature.startswith(expected_signature):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Uploaded file does not have a valid {extension} file signature.",
+                    )
+                temp_handle.write(chunk)
+
+        if len(signature) < len(expected_signature) or not signature.startswith(expected_signature):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Uploaded file does not have a valid {extension} file signature.",
+            )
 
         # Load and parse Excel
         try:
-            df = load_dispatch_excel(str(temp_file))
+            df = load_dispatch_excel(str(temp_file), source_id=file.filename or temp_file.name)
             if df.empty:
                 raise HTTPException(status_code=400, detail="Uploaded file is empty or has no valid rows")
         except Exception as e:
@@ -723,4 +893,4 @@ async def export_grouped_data(
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host=get_api_host(), port=8000)
