@@ -345,8 +345,22 @@ def _parse_dispatch_dates(
             )
         elif isinstance(value, str):
             text = value.strip()
-            if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
-                date_format = "%Y-%m-%d"
+            iso_match = re.fullmatch(
+                r"(?P<date>\d{4}-\d{2}-\d{2})"
+                r"(?:(?: |T)\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)?",
+                text,
+            )
+            if iso_match:
+                date_text = iso_match.group("date")
+                try:
+                    datetime.strptime(date_text, "%Y-%m-%d")
+                    if text != date_text:
+                        datetime.fromisoformat(text.replace("Z", "+00:00"))
+                except ValueError:
+                    parsed.append(pd.NaT)
+                else:
+                    parsed.append(pd.Timestamp(date_text))
+                continue
             elif re.fullmatch(r"\d{2}/\d{2}/\d{4}", text):
                 date_format = "%d/%m/%Y" if day_first else "%m/%d/%Y"
             elif re.fullmatch(r"\d{2}-\d{2}-\d{4}", text):
