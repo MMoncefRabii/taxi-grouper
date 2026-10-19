@@ -1,3 +1,4 @@
+import pytest
 import pandas as pd
 
 from src.config import GrouperConfig
@@ -33,10 +34,53 @@ def test_iso_date_is_parsed_as_april_3():
     assert parsed.iloc[0] == pd.Timestamp("2026-04-03")
 
 
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("2026-10-19", pd.Timestamp("2026-10-19")),
+        ("2026-10-19 00:00:00", pd.Timestamp("2026-10-19")),
+        ("2026-10-19T08:30:00", pd.Timestamp("2026-10-19")),
+        ("2026-10-19 08:30:00.000", pd.Timestamp("2026-10-19")),
+        ("2026-10-19T08:30:00.125Z", pd.Timestamp("2026-10-19")),
+        ("2026-10-19T08:30:00+02:00", pd.Timestamp("2026-10-19")),
+        ("2026-13-45", pd.NaT),
+        ("2026-10-19 25:30:00", pd.NaT),
+        ("abc", pd.NaT),
+        ("", pd.NaT),
+        ("05/06/2026", pd.Timestamp("2026-06-05")),
+        ("  2026-10-19T08:30:00  ", pd.Timestamp("2026-10-19")),
+    ],
+)
+def test_iso_datetime_strings_parse_as_dispatch_dates(value, expected):
+    parsed = _parse_dispatch_dates(pd.Series([value])).iloc[0]
+
+    if pd.isna(expected):
+        assert pd.isna(parsed)
+    else:
+        assert parsed == expected
+
+
 def test_day_first_option_is_configurable():
     parsed = _parse_dispatch_dates(pd.Series(["03/04/2026"]), day_first=False)
 
     assert parsed.iloc[0] == pd.Timestamp("2026-03-04")
+
+
+def test_group_agents_assigns_rows_with_iso_timestamp_string_dates():
+    df = pd.DataFrame(
+        {
+            "Date": ["2026-10-19T08:30:00", "2026-10-19 08:30:00.000"],
+            "SourceDispatchID": ["dispatch-A"] * 2,
+            "Nom": ["Agent 1", "Agent 2"],
+            "Adresse": ["Ariana"] * 2,
+            "Heure": ["07:00"] * 2,
+        }
+    )
+
+    grouped, _warnings = _group_agents(df, detect_columns(df), use_ml=False)
+
+    assert grouped["UnassignedReason"].eq("").all()
+    assert grouped["Groupe Taxi"].fillna("").astype(str).str.strip().ne("").all()
 
 
 def test_day_first_option_is_available_in_grouper_config():
