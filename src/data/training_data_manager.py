@@ -179,7 +179,19 @@ def extract_training_examples_from_corrections(
     """
     logger.debug(f"Extracting corrections for sheet {sheet_id}")
     logger.debug(f"Looking for sheet_id: {sheet_id}")
-    
+
+    if post_correction_df.attrs.get("merge_info_available") is False:
+        return {
+            "success": False,
+            "error": "Merge information unavailable; correction capture skipped",
+            "corrections": [],
+            "stats": {
+                "status": "merge_info_unavailable",
+                "total_rows": len(post_correction_df),
+                "rows_changed": 0,
+            },
+        }
+
     pre_df = _load_pre_correction_state(sheet_id)
     if pre_df is None:
         logger.warning(f"No pre-correction state cached for sheet {sheet_id}")
@@ -218,6 +230,12 @@ def extract_training_examples_from_corrections(
     # Find rows where the taxi assignment changed
     corrections = []
     changed_indices = []
+
+    def _normalize_taxi_assignment(value: Any) -> str:
+        if value is None or pd.isna(value):
+            return ""
+        normalized = str(value).strip()
+        return "" if normalized.lower() in {"", "nan"} else normalized
 
     # Fields we consider volatile/noisy and should be ignored for fingerprinting
     VOLATILE_FIELDS = {"heure d'arrivée", 'prix', 'timestamp', 'score', 'internal_score', 'last_updated', 'updated_at'}
@@ -262,17 +280,18 @@ def extract_training_examples_from_corrections(
     pre_groups: dict[str, set] = {}
     post_groups: dict[str, set] = {}
     for idx in pre_df.index:
-        key = str(pre_df.loc[idx, taxi_column]).strip()
+        key = _normalize_taxi_assignment(pre_df.loc[idx, taxi_column])
         pre_groups.setdefault(key, set()).add(pre_fps[idx])
     for idx in post_correction_df.index:
-        key = str(post_correction_df.iloc[idx][taxi_column]).strip()
+        key = _normalize_taxi_assignment(post_correction_df.iloc[idx][taxi_column])
         post_groups.setdefault(key, set()).add(post_fps[idx])
 
+    # Matching remains positional; row insertion, deletion, or reordering can misattribute changes.
     for idx in pre_df.index:
-        pre_taxi = str(pre_df.loc[idx, taxi_column]).strip()
-        post_taxi = str(post_correction_df.iloc[idx][taxi_column]).strip()
+        pre_taxi = _normalize_taxi_assignment(pre_df.loc[idx, taxi_column])
+        post_taxi = _normalize_taxi_assignment(post_correction_df.iloc[idx][taxi_column])
 
-        if pre_taxi != post_taxi and pre_taxi.lower() != "nan" and post_taxi.lower() != "nan":
+        if pre_taxi != post_taxi and pre_taxi and post_taxi:
             # Semantic check: if the full membership of the source group equals the target group's membership,
             # then this is likely a pure relabeling (cosmetic renumbering) and should be skipped.
             pre_members = pre_groups.get(pre_taxi, set())
@@ -289,6 +308,28 @@ def extract_training_examples_from_corrections(
                 "row_data": post_correction_df.iloc[idx].to_dict()  # Store corrected data
             }
             corrections.append(correction)
+
+    detected_count = len(corrections)
+    if len(pre_df) > 0 and detected_count > len(pre_df) * 0.5:
+        logger.warning(
+            "Correction capture rejected by sanity limit: corrections=%d rows=%d",
+            detected_count,
+            len(pre_df),
+        )
+        clear_pre_correction_state(sheet_id)
+        return {
+            "success": True,
+            "status": "sanity_limit_exceeded",
+            "corrections": [],
+            "stats": {
+                "status": "sanity_limit_exceeded",
+                "total_rows": len(pre_df),
+                "rows_changed": 0,
+                "detected_corrections": detected_count,
+                "change_percentage": (detected_count / len(pre_df) * 100),
+                "timestamp": datetime.now().isoformat(),
+            },
+        }
     
     stats = {
         "total_rows": len(pre_df),
