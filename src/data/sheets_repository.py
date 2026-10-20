@@ -294,10 +294,23 @@ def _read_google_sheet_to_dataframe(sheet_id: str, sheet_title: str | None = Non
     """
     logger.info("_read_google_sheet_to_dataframe called for sheet_id=%s sheet_title=%s", sheet_id, sheet_title)
     sheets = build_sheets_service()
-    spreadsheet = sheets.spreadsheets().get(
-        spreadsheetId=sheet_id,
-        fields="sheets(properties(sheetId,title))",
-    ).execute()
+    merge_info_available = True
+    try:
+        spreadsheet = sheets.spreadsheets().get(
+            spreadsheetId=sheet_id,
+            fields="sheets(properties(sheetId,title),merges)",
+        ).execute()
+    except Exception as exc:
+        logger.warning(
+            "Merged-cell metadata unavailable; correction capture will be skipped (%s)",
+            type(exc).__name__,
+        )
+        merge_info_available = False
+        spreadsheet = sheets.spreadsheets().get(
+            spreadsheetId=sheet_id,
+            fields="sheets(properties(sheetId,title))",
+        ).execute()
+
     sheets_list = spreadsheet.get("sheets", [])
     if not sheets_list:
         raise RuntimeError("Spreadsheet does not contain any sheets.")
@@ -313,6 +326,36 @@ def _read_google_sheet_to_dataframe(sheet_id: str, sheet_title: str | None = Non
         raise RuntimeError("Spreadsheet must contain a header row and at least one data row.")
 
     headers = [str(value) for value in values[0]]
+    selected_sheet = next(sheet for sheet in sheets_list if sheet["properties"]["title"] == sheet_title)
+    taxi_column_index = headers.index("Groupe Taxi") if "Groupe Taxi" in headers else None
+    if merge_info_available and taxi_column_index is not None:
+        grid = [list(row) for row in values]
+        for merged_range in selected_sheet.get("merges", []):
+            start_column = merged_range.get("startColumnIndex")
+            end_column = merged_range.get("endColumnIndex")
+            start_row = merged_range.get("startRowIndex")
+            end_row = merged_range.get("endRowIndex")
+            if (
+                start_column != taxi_column_index
+                or end_column != taxi_column_index + 1
+                or not isinstance(start_row, int)
+                or not isinstance(end_row, int)
+                or start_row < 1
+                or end_row <= start_row
+                or start_row >= len(grid)
+            ):
+                continue
+
+            anchor_row = grid[start_row]
+            anchor_value = anchor_row[taxi_column_index] if taxi_column_index < len(anchor_row) else ""
+            for row_index in range(start_row, end_row):
+                while row_index >= len(grid):
+                    grid.append([])
+                while len(grid[row_index]) <= taxi_column_index:
+                    grid[row_index].append("")
+                grid[row_index][taxi_column_index] = anchor_value
+        values = grid
+
     rows: list[list[str]] = []
     block_ordinals: list[int] = []
     block_ordinal = 1
@@ -330,12 +373,14 @@ def _read_google_sheet_to_dataframe(sheet_id: str, sheet_title: str | None = Non
     sheet_gid = title_to_gid[sheet_title]
     result["SourceSheet"] = str(sheet_gid)
     result["BlockID"] = [f"{sheet_gid}_{ordinal - 1}" for ordinal in block_ordinals]
-    return add_dispatch_block_metadata(
+    result = add_dispatch_block_metadata(
         result,
         source_id=sheet_id,
         sheet_name=str(sheet_gid),
         block_ordinals=block_ordinals,
     )
+    result.attrs["merge_info_available"] = merge_info_available
+    return result
 
 
 def read_sheet_to_dataframe(sheet_id: str, sheet_title: str | None = None) -> pd.DataFrame:
@@ -345,23 +390,7 @@ def read_sheet_to_dataframe(sheet_id: str, sheet_title: str | None = None) -> pd
     Automatically detects if it's a Google Sheet or an Office file
     and handles conversion appropriately.
     """
-    df = read_from_drive_file(sheet_id, sheet_title=sheet_title)
-    return _forward_fill_grouped_taxi_column(df)
-
-
-def _forward_fill_grouped_taxi_column(df: pd.DataFrame) -> pd.DataFrame:
-    """Forward-fill collapsed/merged taxi group values after reading from Google Sheets."""
-    taxi_columns = ["Groupe Taxi", "Taxi", "Groupe", "Group"]
-    for taxi_column in taxi_columns:
-        if taxi_column in df.columns:
-            df[taxi_column] = (
-                df[taxi_column]
-                .astype(str)
-                .replace(r"^\s*$", pd.NA, regex=True)
-                .ffill()
-            )
-            break
-    return df
+    return read_from_drive_file(sheet_id, sheet_title=sheet_title)
 
 
 def write_grouped_df_to_sheet(
