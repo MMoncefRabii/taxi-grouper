@@ -16,18 +16,15 @@ TEST_LIMIT = 128
 
 def _setup_grouping(monkeypatch):
     monkeypatch.setenv("TAXI_GROUPER_API_KEY", "test-only-api-key-with-at-least-32-bytes")
-    monkeypatch.setattr(service, "load_dispatch_excel", lambda *_args, **_kwargs: pd.DataFrame({"Address": ["A"]}))
-    monkeypatch.setattr(service, "detect_columns", lambda _df: object())
-    monkeypatch.setattr(service, "filter_dataframe", lambda df, *_args, **_kwargs: df)
     monkeypatch.setattr(
         service,
-        "group_agents",
-        lambda df, **_kwargs: (pd.DataFrame({TAXI_COLUMN: [1], "Zone": ["A"]}), []),
-    )
-    monkeypatch.setattr(
-        service,
-        "validate_dispatch",
-        lambda *_args, **_kwargs: {"valid": True, "errors": [], "warnings": [], "taxi_reports": []},
+        "run_dispatch_pipeline",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            grouped=pd.DataFrame({TAXI_COLUMN: [1], "Zone": ["A"]}),
+            validation={"valid": True, "errors": [], "warnings": [], "taxi_reports": []},
+            warnings=[],
+            filtered_count=1,
+        ),
     )
     monkeypatch.setattr(service, "get_settings", lambda: SimpleNamespace(max_upload_size_bytes=TEST_LIMIT))
 
@@ -154,7 +151,7 @@ def test_processing_error_removes_temporary_upload(monkeypatch, tmp_path):
     monkeypatch.setattr(service.tempfile, "tempdir", str(tmp_path))
     monkeypatch.setattr(
         service,
-        "load_dispatch_excel",
+        "run_dispatch_pipeline",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("invalid workbook")),
     )
 

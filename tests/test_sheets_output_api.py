@@ -1,5 +1,6 @@
 import asyncio
 import inspect
+from types import SimpleNamespace
 
 import pandas as pd
 
@@ -27,6 +28,15 @@ def _validation_result():
     }
 
 
+def _pipeline_result():
+    return SimpleNamespace(
+        grouped=_grouped_output(),
+        warnings=[],
+        validation=_validation_result(),
+        filtered_count=1,
+    )
+
+
 def _run_group_sheet(source_id):
     kwargs = {
         "sheet_id": source_id,
@@ -49,10 +59,7 @@ def test_group_sheet_response_preserves_aliases_and_keys_state_by_client_output(
     stored = {}
     monkeypatch.setattr(service, "_ensure_native_sheet", lambda sheet_id: (sheet_id, None, False))
     monkeypatch.setattr(service, "read_sheet_to_dataframe", lambda _sheet_id: pd.DataFrame({"Adresse": ["Ariana"]}))
-    monkeypatch.setattr(service, "detect_columns", lambda _df: object())
-    monkeypatch.setattr(service, "filter_dataframe", lambda df, *_args, **_kwargs: df)
-    monkeypatch.setattr(service, "group_agents", lambda *_args, **_kwargs: (_grouped_output(), []))
-    monkeypatch.setattr(service, "validate_dispatch", lambda *_args, **_kwargs: _validation_result())
+    monkeypatch.setattr(service, "run_dispatch_pipeline", lambda *_args, **_kwargs: _pipeline_result())
     monkeypatch.setattr(service, "get_file_metadata", lambda _sheet_id: {"name": "dispatch"})
 
     def write(*args, **kwargs):
@@ -95,10 +102,7 @@ def test_group_sheet_never_passes_source_or_converted_copy_as_output(monkeypatch
         lambda _sheet_id: ("converted-id", "converted-url", True),
     )
     monkeypatch.setattr(service, "read_sheet_to_dataframe", lambda _sheet_id: pd.DataFrame({"Adresse": ["Ariana"]}))
-    monkeypatch.setattr(service, "detect_columns", lambda _df: object())
-    monkeypatch.setattr(service, "filter_dataframe", lambda df, *_args, **_kwargs: df)
-    monkeypatch.setattr(service, "group_agents", lambda *_args, **_kwargs: (_grouped_output(), []))
-    monkeypatch.setattr(service, "validate_dispatch", lambda *_args, **_kwargs: _validation_result())
+    monkeypatch.setattr(service, "run_dispatch_pipeline", lambda *_args, **_kwargs: _pipeline_result())
     monkeypatch.setattr(service, "get_file_metadata", lambda _sheet_id: {"name": "source-name"})
 
     def write(*args, **kwargs):
@@ -121,10 +125,7 @@ def test_group_sheet_requires_both_output_ids_and_explicit_overwrite(monkeypatch
     called = []
     monkeypatch.setattr(service, "_ensure_native_sheet", lambda sheet_id: (sheet_id, None, False))
     monkeypatch.setattr(service, "read_sheet_to_dataframe", lambda _sheet_id: pd.DataFrame({"Adresse": ["Ariana"]}))
-    monkeypatch.setattr(service, "detect_columns", lambda _df: object())
-    monkeypatch.setattr(service, "filter_dataframe", lambda df, *_args, **_kwargs: df)
-    monkeypatch.setattr(service, "group_agents", lambda *_args, **_kwargs: (_grouped_output(), []))
-    monkeypatch.setattr(service, "validate_dispatch", lambda *_args, **_kwargs: _validation_result())
+    monkeypatch.setattr(service, "run_dispatch_pipeline", lambda *_args, **_kwargs: _pipeline_result())
     monkeypatch.setattr(service, "get_file_metadata", lambda _sheet_id: {"name": "dispatch"})
 
     def write(_grouped, **_kwargs):

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from io import BytesIO
 from pathlib import Path
+from typing import BinaryIO, Mapping
 import zipfile
 import xml.etree.ElementTree as ET
 
@@ -143,23 +145,39 @@ def add_dispatch_block_metadata(
 
 
 def load_dispatch_excel(
-    path: str | Path,
+    source: str | Path | BinaryIO,
     read_all_sheets: bool = True,
     source_id: str | None = None,
 ) -> pd.DataFrame:
     """Load a dispatch workbook, removing repeated Historique-style header rows safely."""
-    path = Path(path)
-    if not path.exists():
-        raise FileNotFoundError(f"Input file not found: {path}")
+    if isinstance(source, (str, Path)):
+        path = Path(source)
+        if not path.exists():
+            raise FileNotFoundError(f"Input file not found: {path}")
+        suffix = path.suffix.lower()
+        input_name = path.name
 
-    if path.suffix.lower() == ".ods":
-        raw_sheets = _read_ods_raw_sheets(path)
+        def read_source() -> Path:
+            return path
+    else:
+        input_name = Path(str(getattr(source, "name", "upload.xlsx"))).name
+        suffix = Path(input_name).suffix.lower() or ".xlsx"
+        source.seek(0)
+        contents = source.read()
+        if not isinstance(contents, bytes):
+            raise TypeError("Workbook file-like sources must return bytes.")
+
+        def read_source() -> BytesIO:
+            return BytesIO(contents)
+
+    if suffix == ".ods":
+        raw_sheets = _read_ods_raw_sheets(read_source())
         if not read_all_sheets:
             first_name = next(iter(raw_sheets))
             raw_sheets = {first_name: raw_sheets[first_name]}
     else:
         try:
-            raw_sheets = pd.read_excel(path, sheet_name=None if read_all_sheets else 0, header=None)
+            raw_sheets = pd.read_excel(read_source(), sheet_name=None if read_all_sheets else 0, header=None)
         except ImportError as exc:
             raise ImportError("This Excel format requires an optional dependency. Install xlrd for .xls files.") from exc
 
@@ -167,7 +185,7 @@ def load_dispatch_excel(
         raw_sheets = {"Sheet1": raw_sheets}
 
     frames: list[pd.DataFrame] = []
-    source_id = source_id or path.name
+    source_id = source_id or input_name
     for sheet_name, raw in raw_sheets.items():
         current_block = -1
         current_headers: list[str] | None = None
@@ -205,10 +223,10 @@ def load_dispatch_excel(
                     )
                 )
         else:
-            if path.suffix.lower() == ".ods":
+            if suffix == ".ods":
                 normal = _raw_sheet_to_table(raw)
             else:
-                normal = pd.read_excel(path, sheet_name=sheet_name)
+                normal = pd.read_excel(read_source(), sheet_name=sheet_name)
             normal["SourceSheet"] = sheet_name
             normal["BlockID"] = f"{sheet_name}_0"
             frames.append(
@@ -227,7 +245,7 @@ def load_dispatch_excel(
     return result
 
 
-def _read_ods_raw_sheets(path: Path) -> dict[str, pd.DataFrame]:
+def _read_ods_raw_sheets(path: Path | BytesIO) -> dict[str, pd.DataFrame]:
     """Read ODS sheets with stdlib XML parsing, returning headerless dataframes."""
     namespaces = {
         "office": "urn:oasis:names:tc:opendocument:xmlns:office:1.0",
@@ -310,25 +328,53 @@ def _best_column(columns: list[str], aliases: list[str]) -> str | None:
     return None
 
 
-def detect_columns(df: pd.DataFrame, require_taxi: bool = False) -> ColumnMap:
+def detect_columns(
+    df: pd.DataFrame,
+    require_taxi: bool = False,
+    column_overrides: Mapping[str, str] | None = None,
+) -> ColumnMap:
     columns = list(df.columns)
-    address = _best_column(columns, ADDRESS_ALIASES)
+    detected = {
+        "address": _best_column(columns, ADDRESS_ALIASES),
+        "time": _best_column(columns, TIME_ALIASES),
+        "name": _best_column(columns, NAME_ALIASES),
+        "taxi": _best_column(columns, TAXI_ALIASES),
+        "operation": _best_column(columns, OPERATION_ALIASES),
+        "site": _best_column(columns, SITE_ALIASES),
+        "type_course": _best_column(columns, TYPE_COURSE_ALIASES),
+        "client": _best_column(columns, ["client"]),
+    }
+    overrides = dict(column_overrides or {})
+    unknown = set(overrides) - set(detected)
+    if unknown:
+        raise ValueError(f"Unknown column override(s): {', '.join(sorted(unknown))}")
+    missing = {
+        name: column
+        for name, column in overrides.items()
+        if column not in columns
+    }
+    if missing:
+        details = ", ".join(f"{name}={column!r}" for name, column in sorted(missing.items()))
+        raise ValueError(f"Column override(s) do not exist in the input: {details}")
+    detected.update(overrides)
+
+    address = detected["address"]
     if not address:
         raise ValueError("Missing required address column. Expected one of: Adresse, Address, Lieu, Localisation, Adresse Ramassage.")
 
-    taxi = _best_column(columns, TAXI_ALIASES)
+    taxi = detected["taxi"]
     if require_taxi and not taxi:
         raise ValueError("Training file must contain a Taxi / Groupe Taxi column with validated groups.")
 
     return ColumnMap(
         address=address,
-        time=_best_column(columns, TIME_ALIASES),
-        name=_best_column(columns, NAME_ALIASES),
+        time=detected["time"],
+        name=detected["name"],
         taxi=taxi,
-        operation=_best_column(columns, OPERATION_ALIASES),
-        site=_best_column(columns, SITE_ALIASES),
-        type_course=_best_column(columns, TYPE_COURSE_ALIASES),
-        client=_best_column(columns, ["client"]),
+        operation=detected["operation"],
+        site=detected["site"],
+        type_course=detected["type_course"],
+        client=detected["client"],
     )
 
 

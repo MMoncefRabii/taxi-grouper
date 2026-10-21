@@ -21,8 +21,9 @@ from fastapi.responses import JSONResponse, StreamingResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from src.core.preprocessing import load_dispatch_excel, detect_columns, filter_dataframe
-from src.core.grouper import group_agents, validate_dispatch
+from src.core.preprocessing import detect_columns
+from src.core.grouper import validate_dispatch
+from src.core.pipeline import run_dispatch_pipeline
 from src.api.authentication import ApiKeyAuthMiddleware
 from src.api.launcher import get_api_host
 from src.adapters.exporter import export_excel
@@ -307,22 +308,25 @@ async def group_sheet_endpoint(
         raise HTTPException(status_code=400, detail=f"Failed to load file: {error_msg}")
 
     try:
-        columns = detect_columns(df)
+        result = run_dispatch_pipeline(
+            df,
+            filters={
+                "time_value": time_filter or None,
+                "type_course": type_course_filter or None,
+                "operation": operation_filter or None,
+            },
+            use_ml=use_ml,
+            validation_taxi_column=TAXI_COLUMN,
+            validation_capacity=MAX_TAXI_CAPACITY,
+        )
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=f"Could not detect required columns in sheet: {str(exc)}")
-
-    df_filtered = filter_dataframe(
-        df,
-        columns,
-        time_value=time_filter or None,
-        type_course=type_course_filter or None,
-        operation=operation_filter or None,
-    )
-    if df_filtered.empty:
+        raise HTTPException(status_code=400, detail=f"Could not process sheet: {str(exc)}")
+    if result.filtered_count == 0:
         raise HTTPException(status_code=400, detail=f"No rows match filters: time={time_filter}, course={type_course_filter}, operation={operation_filter}")
 
-    grouped, warnings = group_agents(df_filtered, columns=columns, use_ml=use_ml)
-    validation = validate_dispatch(grouped, taxi_column=TAXI_COLUMN, capacity=MAX_TAXI_CAPACITY)
+    grouped = result.grouped
+    warnings = result.warnings
+    validation = result.validation
 
     source_sheet_ids = {original_source_id, sheet_id}
     if client_sheet_id and internal_sheet_id:
@@ -713,13 +717,9 @@ async def group_agents_endpoint(
     Group agents into taxis from an uploaded Excel file.
 
     **Workflow:**
-    1. Load and parse Excel → preprocessing.load_dispatch_excel()
-    2. Auto-detect columns (address, taxi, time, etc.) → preprocessing.detect_columns()
-    3. Apply filters (time, course type, operation) → preprocessing.filter_dataframe()
-    4. Enrich with clean destinations → destination_cleaner.add_clean_destination_columns()
-    5. Run grouping algorithm → grouper.group_agents() (uses ml_model if use_ml=True)
-    6. Validate output → grouper.validate_dispatch()
-    7. Return JSON with grouped data, stats, warnings, and validation results
+    1. Run the shared workbook loading, detection, filtering, grouping, and
+       validation pipeline.
+    2. Return JSON with grouped data, stats, warnings, and validation results.
 
     **Returns:**
     - grouped_data: array of agent records with assigned taxi, zone, destination
@@ -765,37 +765,29 @@ async def group_agents_endpoint(
                 detail=f"Uploaded file does not have a valid {extension} file signature.",
             )
 
-        # Load and parse Excel
+        # Run the same workbook pipeline used by the CLI and Streamlit.
         try:
-            df = load_dispatch_excel(str(temp_file), source_id=file.filename or temp_file.name)
-            if df.empty:
-                raise HTTPException(status_code=400, detail="Uploaded file is empty or has no valid rows")
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Failed to load Excel: {str(e)}")
+            result = run_dispatch_pipeline(
+                temp_file,
+                source_id=file.filename or temp_file.name,
+                filters={
+                    "time_value": time_filter or None,
+                    "type_course": type_course_filter or None,
+                    "operation": operation_filter or None,
+                },
+                use_ml=use_ml,
+                validation_taxi_column=TAXI_COLUMN,
+                validation_capacity=MAX_TAXI_CAPACITY,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=f"Failed to process Excel: {str(exc)}")
 
-        # Auto-detect columns (address, time, taxi, operation, site, type_course)
-        try:
-            columns = detect_columns(df)
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=f"Could not detect required columns: {str(e)}")
-
-        # Apply optional filters
-        df_filtered = filter_dataframe(
-            df,
-            columns,
-            time_value=time_filter or None,
-            type_course=type_course_filter or None,
-            operation=operation_filter or None,
-        )
-
-        if df_filtered.empty:
+        if result.filtered_count == 0:
             raise HTTPException(status_code=400, detail=f"No rows match filters: time={time_filter}, course={type_course_filter}, operation={operation_filter}")
 
-        # Run grouping algorithm (optionally with ML)
-        grouped, warnings = group_agents(df_filtered, columns=columns, use_ml=use_ml)
-
-        # Validate the final groups
-        validation = validate_dispatch(grouped, taxi_column=TAXI_COLUMN, capacity=MAX_TAXI_CAPACITY)
+        grouped = result.grouped
+        warnings = result.warnings
+        validation = result.validation
 
         # Calculate summary statistics
         stats = {
