@@ -4,10 +4,13 @@ FastAPI backend for Taxi Grouper - wraps existing grouping logic without modific
 Run with: uvicorn src.api.service:app --reload
 """
 
+import hmac
 import json
 import os
+import secrets
 import tempfile
 import threading
+import time
 import urllib.parse
 from pathlib import Path
 import logging
@@ -55,6 +58,52 @@ from src.data.training_data_manager import (
     run_retraining_pipeline,
     _get_training_corrections_path,
 )
+
+_OAUTH_STATE_TTL_SECONDS = 600
+_OAUTH_STATE_STORE_MAX_SIZE = 1000
+# This in-memory store is single-process only; multiple workers need shared storage.
+_OAUTH_STATES: dict[str, float] = {}
+_OAUTH_STATE_LOCK = threading.Lock()
+
+
+def _purge_expired_oauth_states(now: float) -> None:
+    expired_states = [
+        state for state, expires_at in _OAUTH_STATES.items() if expires_at <= now
+    ]
+    for state in expired_states:
+        del _OAUTH_STATES[state]
+
+
+def _create_oauth_state() -> str:
+    now = time.monotonic()
+    with _OAUTH_STATE_LOCK:
+        _purge_expired_oauth_states(now)
+        if len(_OAUTH_STATES) >= _OAUTH_STATE_STORE_MAX_SIZE:
+            oldest_state = min(_OAUTH_STATES, key=_OAUTH_STATES.get)
+            del _OAUTH_STATES[oldest_state]
+
+        state = secrets.token_urlsafe(32)
+        _OAUTH_STATES[state] = now + _OAUTH_STATE_TTL_SECONDS
+    return state
+
+
+def _consume_oauth_state(state: str | None) -> bool:
+    if not state or len(state) > 512:
+        return False
+    try:
+        supplied_state = state.encode("ascii")
+    except UnicodeEncodeError:
+        return False
+
+    now = time.monotonic()
+    with _OAUTH_STATE_LOCK:
+        _purge_expired_oauth_states(now)
+        for stored_state in list(_OAUTH_STATES):
+            if hmac.compare_digest(stored_state.encode("ascii"), supplied_state):
+                del _OAUTH_STATES[stored_state]
+                return True
+    return False
+
 
 class GroupUploadRequestTooLarge(Exception):
     pass
@@ -216,7 +265,8 @@ async def health_check():
 async def auth_login_url():
     """Return the Google OAuth login URL for the single-user web app."""
     try:
-        return {"auth_url": get_auth_url()}
+        state = _create_oauth_state()
+        return {"auth_url": get_auth_url(state)}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Could not build Google auth URL: {str(exc)}")
 
@@ -247,8 +297,14 @@ async def auth_logout():
 
 
 @app.get("/auth/callback")
-async def auth_callback(code: str | None = None, error: str | None = None):
+async def auth_callback(
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+):
     """Exchange Google OAuth code for tokens and redirect back to the frontend."""
+    if not _consume_oauth_state(state):
+        raise HTTPException(status_code=400, detail="Invalid or expired OAuth state.")
     if error:
         return RedirectResponse(get_frontend_redirect_url(False, error))
     if not code:
@@ -257,8 +313,10 @@ async def auth_callback(code: str | None = None, error: str | None = None):
         token_info = exchange_code_for_token(code)
         save_google_tokens(token_info)
         return RedirectResponse(get_frontend_redirect_url(True))
-    except Exception as exc:
-        return RedirectResponse(get_frontend_redirect_url(False, str(exc)))
+    except Exception:
+        return RedirectResponse(
+            get_frontend_redirect_url(False, "Google authorization failed")
+        )
 
 
 @app.post("/api/group-sheet")

@@ -155,12 +155,13 @@ def revoke_google_tokens() -> None:
     _clear_user_info()
 
 
-def get_auth_url() -> str:
+def get_auth_url(state: str) -> str:
     _ensure_client_settings()
     params = {
         "client_id": CLIENT_ID,
         "redirect_uri": REDIRECT_URI,
         "response_type": "code",
+        "state": state,
         "scope": " ".join(SCOPES),
         "access_type": "offline",
         "prompt": "consent",
