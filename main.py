@@ -6,8 +6,7 @@ import argparse
 from pathlib import Path
 
 from src.adapters.exporter import export_like_historique
-from src.core.grouper import group_agents, validate_dispatch
-from src.core.preprocessing import detect_columns, filter_dataframe, load_dispatch_excel
+from src.core.pipeline import run_dispatch_pipeline
 
 
 def parse_args() -> argparse.Namespace:
@@ -23,11 +22,18 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    df = load_dispatch_excel(args.input)
-    columns = detect_columns(df)
-    df = filter_dataframe(df, columns, args.time, args.type_course, args.operation)
-    grouped, warnings = group_agents(df, columns=columns, use_ml=not args.no_ml)
-    validation = validate_dispatch(grouped)
+    result = run_dispatch_pipeline(
+        args.input,
+        filters={
+            "time_value": args.time,
+            "type_course": args.type_course,
+            "operation": args.operation,
+        },
+        use_ml=not args.no_ml,
+    )
+    grouped = result.grouped
+    warnings = result.warnings
+    validation = result.validation
     if validation["errors"]:
         raise ValueError("\n".join(validation["errors"]))
     output = export_like_historique(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from io import BytesIO
 import json
 from pathlib import Path
 import sys
@@ -124,6 +125,7 @@ def test_standard_loader_invariants_snapshot_and_determinism() -> None:
 
 def test_api_upload_route_matches_golden_partition(monkeypatch: pytest.MonkeyPatch) -> None:
     from src.api.service import app
+    from src.core.pipeline import run_dispatch_pipeline
 
     monkeypatch.setenv("TAXI_GROUPER_API_KEY", API_KEY)
     response = TestClient(app).post(
@@ -143,8 +145,10 @@ def test_api_upload_route_matches_golden_partition(monkeypatch: pytest.MonkeyPat
     result = response.json()
     records = result["grouped_data"]
     grouped = pd.DataFrame(records)
+    pipeline_result = run_dispatch_pipeline(FIXTURE_PATH, use_ml=False)
     _assert_invariants(grouped)
     _fail_on_partition_difference(_partition_from_api(records), _expected_partition())
+    _fail_on_partition_difference(_partition_from_api(records), _canonical_partition(pipeline_result.grouped))
     if not result["validation"]["valid"]:
         pytest.fail("API validation result is invalid")
     if result["validation"]["errors"]:
@@ -180,21 +184,57 @@ def test_clean_runtime_paths_need_no_ignored_data_or_model_files(
     _fail_on_partition_difference(_canonical_partition(grouped), _expected_partition())
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Streamlit reads with pandas directly and does not synthesize a dispatch ID.",
-)
-def test_streamlit_direct_load_reproduces_dispatch_id_gap() -> None:
-    from src.core.grouper import group_agents
-    from src.core.preprocessing import detect_columns, filter_dataframe
+def test_streamlit_pipeline_loads_dispatch_ids_for_golden_workbook() -> None:
+    from src.core.pipeline import run_dispatch_pipeline
 
-    dispatch = pd.read_excel(FIXTURE_PATH)
-    columns = detect_columns(dispatch)
-    filtered = filter_dataframe(dispatch, columns)
-    grouped, _warnings = group_agents(filtered, columns=columns, use_ml=False)
+    result = run_dispatch_pipeline(
+        BytesIO(FIXTURE_PATH.read_bytes()),
+        source_id=FIXTURE_PATH.name,
+        use_ml=False,
+    )
+    grouped = result.grouped
     assigned = grouped[TAXI_COLUMN].notna() & grouped[TAXI_COLUMN].astype(str).str.strip().ne("")
     assert int(assigned.sum()) == 110, f"assigned rows={int(assigned.sum())}, input rows=110"
+    assert grouped["SourceDispatchID"].notna().all()
 
+
+def test_workbook_partitions_match_across_dispatch_entry_points(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.core.pipeline import run_dispatch_pipeline
+    import main as cli_main
+
+    direct = run_dispatch_pipeline(FIXTURE_PATH, use_ml=False)
+    expected = _canonical_partition(direct.grouped)
+
+    streamlit_result = run_dispatch_pipeline(
+        BytesIO(FIXTURE_PATH.read_bytes()),
+        source_id=FIXTURE_PATH.name,
+        use_ml=False,
+    )
+    assert _canonical_partition(streamlit_result.grouped) == expected
+
+    cli_results: list[pd.DataFrame] = []
+    monkeypatch.setattr(
+        cli_main,
+        "parse_args",
+        lambda: argparse.Namespace(
+            input=str(FIXTURE_PATH),
+            output="unused.xlsx",
+            time=None,
+            type_course=None,
+            operation=None,
+            no_ml=True,
+        ),
+    )
+    monkeypatch.setattr(
+        cli_main,
+        "export_like_historique",
+        lambda grouped, *_args, **_kwargs: cli_results.append(grouped.copy()) or "unused.xlsx",
+    )
+    cli_main.main()
+    assert len(cli_results) == 1
+    assert _canonical_partition(cli_results[0]) == expected
 
 def _regenerate_expected_groups() -> None:
     grouped = _group_fixture()

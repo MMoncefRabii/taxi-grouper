@@ -10,8 +10,7 @@ import streamlit as st
 
 from src.config import DATA_DIR, OUTPUTS_DIR
 from src.adapters.exporter import export_excel
-from src.core.grouper import group_agents, validate_groups
-from src.core.preprocessing import detect_columns, filter_dataframe
+from src.core.pipeline import run_dispatch_pipeline
 
 
 st.set_page_config(page_title="Taxi Grouper - Grand Tunis", layout="wide")
@@ -23,30 +22,32 @@ type_course = st.selectbox("Type de course", ["", "Ramassage", "Retour"])
 operation = st.text_input("Client / Operation", value="")
 
 if uploaded:
-    df = pd.read_excel(uploaded)
-    try:
-        columns = detect_columns(df)
-    except ValueError as exc:
-        st.error(str(exc))
-        st.stop()
-
-    filtered = filter_dataframe(
-        df,
-        columns,
-        time_value=time_value or None,
-        type_course=type_course or None,
-        operation=operation or None,
-    )
-
-    st.caption(f"{len(filtered)} rows ready for grouping")
+    st.caption("Workbook loaded; current filters will be applied during grouping.")
     if st.button("Run automatic grouping", type="primary"):
-        grouped, warnings = group_agents(filtered, columns=columns, use_ml=True)
-        validate_groups(grouped)
-        st.session_state["grouped"] = grouped
-        st.session_state["warnings"] = warnings
+        try:
+            result = run_dispatch_pipeline(
+                uploaded,
+                source_id=uploaded.name,
+                filters={
+                    "time_value": time_value or None,
+                    "type_course": type_course or None,
+                    "operation": operation or None,
+                },
+                use_ml=True,
+            )
+        except ValueError as exc:
+            st.error(str(exc))
+            st.stop()
+        if result.validation["errors"]:
+            st.error("\n".join(result.validation["errors"]))
+            st.stop()
+        st.session_state["grouped"] = result.grouped
+        st.session_state["warnings"] = result.warnings
+        st.session_state["filtered_count"] = result.filtered_count
 
 if "grouped" in st.session_state:
     grouped = st.session_state["grouped"]
+    st.caption(f"{st.session_state.get('filtered_count', len(grouped))} rows grouped")
     for warning in st.session_state.get("warnings", []):
         st.warning(warning)
 
