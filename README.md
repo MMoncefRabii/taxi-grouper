@@ -115,10 +115,16 @@ python api.py
 ```
 
 Business, debug, API documentation, and OAuth-management routes require the
+<<<<<<< HEAD
 `TAXI_GROUPER_API_KEY` server environment variable and an
 `Authorization: Bearer <key>` header. `/health`, `/api/auth/login-url`, and
 `/auth/callback`; `/ready` is also unauthenticated (CORS
 `OPTIONS` preflight requests also pass without authentication). If the server key is
+=======
+`TAXI_GROUPER_API_KEY` server environment variable and a bearer authorization
+header. `/health` and `/auth/callback` are the only unauthenticated application
+endpoints (CORS `OPTIONS` preflight requests also pass without authentication). If the server key is
+>>>>>>> df20fed (fix(auth): require API key on OAuth login-url)
 missing or shorter than 32 characters, protected requests fail closed with
 HTTP 503; missing or incorrect caller credentials receive HTTP 401.
 
@@ -131,15 +137,29 @@ $env:TAXI_GROUPER_API_KEY = "<generated-key>"
 python api.py
 ```
 
-**Warning:** OAuth login/callback remain temporary unauthenticated handshake
-routes; OAuth state validation is not implemented. The React/Vite frontend is
-unsupported and will receive HTTP 401 on protected routes. Do not relaunch it.
+Google sign-in starts at `GET /api/auth/login-url`, which requires the API key.
+For example, a trusted operator can request the URL from PowerShell without
+putting the key in a URL or browser bundle:
+
+```powershell
+Invoke-RestMethod -Headers @{ Authorization = "Bearer $env:TAXI_GROUPER_API_KEY" } `
+  -Uri "http://127.0.0.1:8000/api/auth/login-url"
+```
+
+Open the returned `auth_url` in a browser. Google redirects to the unauthenticated
+`/auth/callback`; that endpoint validates the one-time OAuth state before saving
+tokens. The React/Vite frontend is unsupported and will receive HTTP 401 on
+protected routes. Do not relaunch it.
 
 Available endpoints include:
 
 - `GET /health` — health check
+<<<<<<< HEAD
 - `GET /ready` — readiness check; unauthenticated and returns no check details
 - `GET /api/auth/login-url` — Google OAuth login URL
+=======
+- `GET /api/auth/login-url` — Google OAuth login URL (requires the API key)
+>>>>>>> df20fed (fix(auth): require API key on OAuth login-url)
 - `GET /api/auth/status` — OAuth sign-in status
 - `POST /api/group-sheet` — group agents from a Google Sheet and write results back
 

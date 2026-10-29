@@ -10,7 +10,6 @@ API_KEY_ENV_VAR = "TAXI_GROUPER_API_KEY"
 MIN_API_KEY_LENGTH = 32
 PUBLIC_ENDPOINTS = {
     ("GET", "/health"),
-    ("GET", "/api/auth/login-url"),
     ("GET", "/auth/callback"),
 }
 

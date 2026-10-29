@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import re
+from datetime import datetime
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -47,6 +49,56 @@ def test_valid_oauth_flow_exchanges_code_and_saves_tokens(monkeypatch):
     assert response.status_code == 307
     assert exchanged_codes == ["test-code"]
     assert saved_tokens == [{"access_token": "test-token"}]
+
+
+def test_callback_logs_token_replacement_without_secrets(monkeypatch, caplog):
+    authorization_code = "private-authorization-code"
+    access_token = "private-access-token"
+    refresh_token = "private-refresh-token"
+    client_secret = "private-client-secret"
+    api_key = "private-api-key"
+    saved_tokens = []
+    monkeypatch.setattr(
+        service,
+        "exchange_code_for_token",
+        lambda code: {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "client_secret": client_secret,
+        },
+    )
+    monkeypatch.setattr(
+        service,
+        "_load_user_info",
+        lambda: {"access_token": "previous-access-token"},
+    )
+    monkeypatch.setattr(service, "save_google_tokens", saved_tokens.append)
+
+    state = _login_state(monkeypatch)
+    with caplog.at_level("INFO", logger=service.__name__):
+        _run(service.auth_callback(code=authorization_code, state=state))
+
+    replacement_logs = [
+        record.getMessage()
+        for record in caplog.records
+        if "Google OAuth tokens stored" in record.getMessage()
+    ]
+    assert len(replacement_logs) == 1
+    log_line = replacement_logs[0]
+    timestamp = re.search(r"stored at (.+) \(tokens_already_existed=True\)", log_line)
+    assert timestamp
+    datetime.fromisoformat(timestamp.group(1))
+    assert saved_tokens == [
+        {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "client_secret": client_secret,
+        }
+    ]
+    assert all(
+        secret not in log_line
+        for secret in (authorization_code, access_token, refresh_token, client_secret, api_key, state)
+    )
 
 
 @pytest.mark.parametrize("state_kind", ["missing", "wrong", "expired"])

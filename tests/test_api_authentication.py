@@ -1,16 +1,17 @@
 import asyncio
 import json
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 
 from src.api.service import app
+from src.api import service
 
 
 API_KEY = "test-only-api-key-with-at-least-32-bytes"
 PUBLIC_AND_OAUTH_HANDSHAKE = {
     ("GET", "/health"),
     ("GET", "/ready"),
-    ("GET", "/api/auth/login-url"),
     ("GET", "/auth/callback"),
 }
 
@@ -162,3 +163,26 @@ def test_protected_route_fails_closed_when_server_key_is_missing(monkeypatch):
 
     assert status == 503
     assert response == {"detail": "Service authentication is not configured."}
+
+
+def test_login_url_rejects_missing_api_key(monkeypatch):
+    monkeypatch.setenv("TAXI_GROUPER_API_KEY", API_KEY)
+
+    status, response = _request("GET", "/api/auth/login-url")
+
+    assert status == 401
+    assert response == {"detail": "Unauthorized"}
+
+
+def test_login_url_with_api_key_returns_url_containing_state(monkeypatch):
+    monkeypatch.setenv("TAXI_GROUPER_API_KEY", API_KEY)
+    monkeypatch.setattr(
+        service,
+        "get_auth_url",
+        lambda state: f"https://accounts.google.test/auth?state={state}",
+    )
+
+    status, response = _request("GET", "/api/auth/login-url", API_KEY)
+
+    assert status == 200
+    assert parse_qs(urlparse(response["auth_url"]).query)["state"][0]
