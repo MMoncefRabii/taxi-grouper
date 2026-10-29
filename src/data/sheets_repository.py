@@ -20,13 +20,17 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 
-from ..config import get_settings
+from ..config import (
+    TOKEN_PATH,
+    ensure_state_directories,
+    get_settings,
+    secure_token_file_permissions,
+)
 from ..core.preprocessing import add_dispatch_block_metadata, is_repeated_header_row, load_dispatch_excel
 from ..schemas import UNASSIGNED_STATUS_BY_REASON
 
 SETTINGS = get_settings()
-DATA_DIR = Path(__file__).resolve().parents[1] / "data"
-TOKEN_FILE = DATA_DIR / "google_oauth_tokens.json"
+TOKEN_FILE = TOKEN_PATH
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 SCOPES = SETTINGS.google_scopes
@@ -109,9 +113,10 @@ def _load_storage() -> dict[str, Any]:
 
 
 def _save_storage(data: dict[str, Any]) -> None:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    ensure_state_directories()
     with _TOKEN_FILE_LOCK:
         _atomic_write_text(TOKEN_FILE, json.dumps(data, indent=2, ensure_ascii=False))
+        secure_token_file_permissions()
 
 
 def _user_id() -> str:
