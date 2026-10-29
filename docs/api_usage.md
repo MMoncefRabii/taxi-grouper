@@ -9,8 +9,8 @@ reference for the later Fleet Tracker Sheets/Picker port.
 
 ## Authentication
 
-All application routes require the API key except `GET /health`, `GET
-/api/auth/login-url`, and `GET /auth/callback`. CORS `OPTIONS` preflight
+All application routes require the API key except `GET /health`, `GET /ready`,
+and `GET /auth/callback`. CORS `OPTIONS` preflight
 requests also pass without authentication; they do not invoke protected route
 handlers. OAuth status, token, and logout routes are protected too. Send the
 key as a bearer credential:
@@ -51,7 +51,13 @@ The backend exposes the following API routes:
 
 Returns a Google OAuth login URL for the current backend instance.
 
-Request: none; this OAuth handshake endpoint is unauthenticated.
+Requires the API key. Make this request from a trusted operator or service
+caller; do not put the API key in browser code or a URL.
+
+```http
+GET /api/auth/login-url
+Authorization: Bearer <key>
+```
 
 Response:
 
@@ -108,7 +114,8 @@ OAuth redirect callback URL.
 
 Used by Google during the OAuth flow. This temporary handshake endpoint is
 unauthenticated and redirects back to the configured frontend URL with
-`auth=success` or `auth=error`. OAuth `state` validation is not implemented.
+`auth=success` or `auth=error`. It accepts only a valid, unexpired, unused
+OAuth state issued by the authenticated login-url endpoint.
 
 Query params:
 - `code` for successful OAuth exchange
@@ -328,7 +335,7 @@ Response:
 
 ## Minimal integration flow
 
-1. `GET /api/auth/login-url` → open OAuth URL (unauthenticated OAuth handshake)
+1. `GET /api/auth/login-url` with the bearer API key → open OAuth URL
 2. complete Google OAuth via `/auth/callback`
 3. `GET /api/auth/token` → get active access token (send API key; temporary Picker support)
 4. `POST /api/sheet-info` → load sheet metadata (send API key)

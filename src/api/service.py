@@ -13,12 +13,14 @@ import threading
 import time
 import urllib.parse
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 import logging
 from typing import AsyncIterator
 
 # Ensure INFO-level logs are emitted for our modules during debugging
 logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 import pandas as pd
 from fastapi import BackgroundTasks, FastAPI, File, UploadFile, Query, HTTPException, Body
@@ -52,6 +54,7 @@ from src.data.sheets_repository import (
     get_auth_url,
     get_frontend_redirect_url,
     get_oauth_access_token,
+    _load_user_info,
     exchange_code_for_token,
     revoke_google_tokens,
     save_google_tokens,
@@ -356,7 +359,17 @@ async def auth_callback(
         return RedirectResponse(get_frontend_redirect_url(False, "Missing authorization code"))
     try:
         token_info = exchange_code_for_token(code)
+        existing_tokens = _load_user_info()
+        tokens_already_existed = bool(
+            existing_tokens
+            and (existing_tokens.get("access_token") or existing_tokens.get("refresh_token"))
+        )
         save_google_tokens(token_info)
+        logger.info(
+            "Google OAuth tokens stored at %s (tokens_already_existed=%s)",
+            datetime.now(timezone.utc).isoformat(),
+            tokens_already_existed,
+        )
         return RedirectResponse(get_frontend_redirect_url(True))
     except Exception:
         return RedirectResponse(
