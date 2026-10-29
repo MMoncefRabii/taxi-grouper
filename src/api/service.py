@@ -12,8 +12,10 @@ import tempfile
 import threading
 import time
 import urllib.parse
+from contextlib import asynccontextmanager
 from pathlib import Path
 import logging
+from typing import AsyncIterator
 
 # Ensure INFO-level logs are emitted for our modules during debugging
 logging.basicConfig(level=logging.INFO)
@@ -27,10 +29,25 @@ from pydantic import BaseModel
 from src.core.preprocessing import detect_columns
 from src.core.grouper import validate_dispatch
 from src.core.pipeline import run_dispatch_pipeline
-from src.api.authentication import ApiKeyAuthMiddleware
+from src.api.authentication import (
+    API_KEY_ENV_VAR,
+    MIN_API_KEY_LENGTH,
+    PUBLIC_ENDPOINTS,
+    ApiKeyAuthMiddleware,
+)
 from src.api.launcher import get_api_host
 from src.adapters.exporter import export_excel
-from src.config import TAXI_COLUMN, MAX_TAXI_CAPACITY, UNKNOWN_ZONE, get_settings
+from src.config import (
+    DATA_DIR,
+    DEFAULT_MODEL_PATH,
+    MAX_TAXI_CAPACITY,
+    STATE_DIR,
+    TAXI_COLUMN,
+    UNKNOWN_ZONE,
+    ensure_state_directories,
+    get_settings,
+    is_directory_writable,
+)
 from src.data.sheets_repository import (
     get_auth_url,
     get_frontend_redirect_url,
@@ -64,6 +81,7 @@ _OAUTH_STATE_STORE_MAX_SIZE = 1000
 # This in-memory store is single-process only; multiple workers need shared storage.
 _OAUTH_STATES: dict[str, float] = {}
 _OAUTH_STATE_LOCK = threading.Lock()
+PUBLIC_ENDPOINTS.add(("GET", "/ready"))
 
 
 def _purge_expired_oauth_states(now: float) -> None:
@@ -201,7 +219,8 @@ class SaveToDriveRequest(BaseModel):
 
 settings = get_settings()
 
-DEBUG_POST_CORRECTION_DIR = Path("data/debug_post_correction_cache")
+ML_ENABLED = True
+DEBUG_POST_CORRECTION_DIR = DATA_DIR / "debug_post_correction_cache"
 
 class DebugSetCorrectionRequest(BaseModel):
     sheet_id: str
@@ -238,10 +257,17 @@ def _ensure_native_sheet(sheet_id: str) -> tuple[str, str, bool]:
     )
     return native_sheet_id, native_sheet_url, was_converted
 
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    ensure_state_directories()
+    yield
+
+
 app = FastAPI(
     title="Taxi Grouper API",
     version="1.0.0",
     description="Backend API for taxi grouping optimization - Grand Tunis",
+    lifespan=lifespan,
 )
 
 app.add_middleware(GroupUploadSizeLimitMiddleware)
@@ -259,6 +285,25 @@ app.add_middleware(
 async def health_check():
     """Health check endpoint."""
     return {"status": "ok"}
+
+
+@app.get("/ready")
+async def readiness_check():
+    ready = True
+    if not is_directory_writable(STATE_DIR):
+        logger.warning("Readiness check failed: state_directory_writable")
+        ready = False
+    api_key = os.getenv(API_KEY_ENV_VAR)
+    if not api_key or len(api_key) < MIN_API_KEY_LENGTH:
+        logger.warning("Readiness check failed: api_key")
+        ready = False
+    if ML_ENABLED and not DEFAULT_MODEL_PATH.is_file():
+        logger.warning("Readiness check failed: model_file")
+        ready = False
+    return JSONResponse(
+        status_code=200 if ready else 503,
+        content={"status": "ready" if ready else "not_ready"},
+    )
 
 
 @app.get("/api/auth/login-url")

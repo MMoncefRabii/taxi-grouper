@@ -24,7 +24,7 @@ from typing import Any
 import pandas as pd
 from sklearn.metrics import accuracy_score
 
-from src.config import DEFAULT_CANDIDATE_MODEL_PATH, DEFAULT_MODEL_PATH
+from src.config import DATA_DIR, DEFAULT_CANDIDATE_MODEL_PATH, DEFAULT_MODEL_PATH
 from src.core.ml_model import (
     HISTORIQUE_COLUMNS,
     load_model,
@@ -35,13 +35,13 @@ from src.core.model_storage import ensure_model_write_allowed
 
 logger = logging.getLogger(__name__)
 
-AUTO_TRAINING_JSONL_PATH = Path("data/auto_training_corrections.jsonl")
-AUTO_TRAINING_DEBUG_JSONL_PATH = Path("data/auto_training_corrections.debug.jsonl")
-RETRAIN_STATE_PATH = Path("data/retrain_state.json")
+AUTO_TRAINING_JSONL_PATH = DATA_DIR / "auto_training_corrections.jsonl"
+AUTO_TRAINING_DEBUG_JSONL_PATH = DATA_DIR / "auto_training_corrections.debug.jsonl"
+RETRAIN_STATE_PATH = DATA_DIR / "retrain_state.json"
 CANDIDATE_MODEL_DIR = DEFAULT_CANDIDATE_MODEL_PATH.parent
 CANDIDATE_MODEL_PATH = DEFAULT_CANDIDATE_MODEL_PATH
 EVALUATION_REPORT_PATH = DEFAULT_MODEL_PATH.parent / "evaluation_report.json"
-PRE_CORRECTION_CACHE_DIR = Path("data/pre_correction_cache")
+PRE_CORRECTION_CACHE_DIR = DATA_DIR / "pre_correction_cache"
 
 _PRE_CORRECTION_CACHE_LOCK = threading.Lock()
 _AUTO_TRAINING_JSONL_LOCK = threading.Lock()
@@ -352,7 +352,7 @@ def extract_training_examples_from_corrections(
 
 def write_training_examples_to_file(
     corrections: list[dict],
-    output_path: str | Path = "data/auto_training_corrections.jsonl"
+    output_path: str | Path = AUTO_TRAINING_JSONL_PATH,
 ) -> Path:
     """
     Write extracted corrections to a JSONL file (one JSON object per line).
@@ -449,7 +449,7 @@ def corrections_to_training_dataframe(
 
 def append_corrections_to_training_file(
     corrections: list[dict],
-    output_path: str | Path = "data/training_files/auto_corrections.xlsx",
+    output_path: str | Path = DATA_DIR / "training_files" / "auto_corrections.xlsx",
     address_column: str = "Adresse",
     taxi_column: str = "Groupe Taxi"
 ) -> Path:

@@ -1,12 +1,15 @@
 import asyncio
 import json
 
+import pytest
+
 from src.api.service import app
 
 
 API_KEY = "test-only-api-key-with-at-least-32-bytes"
 PUBLIC_AND_OAUTH_HANDSHAKE = {
     ("GET", "/health"),
+    ("GET", "/ready"),
     ("GET", "/api/auth/login-url"),
     ("GET", "/auth/callback"),
 }
@@ -77,6 +80,69 @@ def test_health_route_remains_public(monkeypatch):
 
     assert status == 200
     assert response == {"status": "ok"}
+
+
+def test_ready_route_reports_ready_with_valid_state(monkeypatch, tmp_path):
+    import src.api.service as service
+
+    model_path = tmp_path / "model.pkl"
+    model_path.write_bytes(b"test model")
+    monkeypatch.setattr(service, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(service, "DEFAULT_MODEL_PATH", model_path)
+    monkeypatch.setattr(service, "ML_ENABLED", True)
+    monkeypatch.setenv("TAXI_GROUPER_API_KEY", API_KEY)
+
+    status, response = _request("GET", "/ready")
+
+    assert status == 200
+    assert response == {"status": "ready"}
+
+
+def test_ready_route_fails_when_state_directory_is_not_writable(monkeypatch, tmp_path):
+    import src.api.service as service
+
+    monkeypatch.setattr(service, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(service, "is_directory_writable", lambda _path: False)
+    monkeypatch.setattr(service, "ML_ENABLED", False)
+    monkeypatch.setenv("TAXI_GROUPER_API_KEY", API_KEY)
+
+    status, response = _request("GET", "/ready")
+
+    assert status == 503
+    assert response == {"status": "not_ready"}
+
+
+@pytest.mark.parametrize("api_key", [None, "short"])
+def test_ready_route_fails_when_api_key_is_missing_or_short(monkeypatch, tmp_path, api_key):
+    import src.api.service as service
+
+    monkeypatch.setattr(service, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(service, "is_directory_writable", lambda _path: True)
+    monkeypatch.setattr(service, "ML_ENABLED", False)
+    if api_key is None:
+        monkeypatch.delenv("TAXI_GROUPER_API_KEY", raising=False)
+    else:
+        monkeypatch.setenv("TAXI_GROUPER_API_KEY", api_key)
+
+    status, response = _request("GET", "/ready")
+
+    assert status == 503
+    assert response == {"status": "not_ready"}
+
+
+def test_ready_route_fails_when_enabled_model_is_missing(monkeypatch, tmp_path):
+    import src.api.service as service
+
+    monkeypatch.setattr(service, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(service, "is_directory_writable", lambda _path: True)
+    monkeypatch.setattr(service, "DEFAULT_MODEL_PATH", tmp_path / "missing-model.pkl")
+    monkeypatch.setattr(service, "ML_ENABLED", True)
+    monkeypatch.setenv("TAXI_GROUPER_API_KEY", API_KEY)
+
+    status, response = _request("GET", "/ready")
+
+    assert status == 503
+    assert response == {"status": "not_ready"}
 
 
 def test_protected_route_rejects_wrong_key_and_accepts_configured_key(monkeypatch):

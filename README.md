@@ -117,7 +117,7 @@ python api.py
 Business, debug, API documentation, and OAuth-management routes require the
 `TAXI_GROUPER_API_KEY` server environment variable and an
 `Authorization: Bearer <key>` header. `/health`, `/api/auth/login-url`, and
-`/auth/callback` are the only unauthenticated application endpoints (CORS
+`/auth/callback`; `/ready` is also unauthenticated (CORS
 `OPTIONS` preflight requests also pass without authentication). If the server key is
 missing or shorter than 32 characters, protected requests fail closed with
 HTTP 503; missing or incorrect caller credentials receive HTTP 401.
@@ -138,6 +138,7 @@ unsupported and will receive HTTP 401 on protected routes. Do not relaunch it.
 Available endpoints include:
 
 - `GET /health` — health check
+- `GET /ready` — readiness check; unauthenticated and returns no check details
 - `GET /api/auth/login-url` — Google OAuth login URL
 - `GET /api/auth/status` — OAuth sign-in status
 - `POST /api/group-sheet` — group agents from a Google Sheet and write results back
@@ -148,16 +149,37 @@ The backend uses shared services from `src.api`, `src.core`, and `src.data`.
 
 > Google Sheet integration requires proper Google OAuth setup. Token state is stored in `src/data/google_oauth_tokens.json`, and the system no longer persists `client_secret` there.
 
-On Windows, restrict access to the token file and its containing `src\data`
-directory to the account that runs the API, `SYSTEM`, and Administrators. The
-directory currently inherits Modify access for Authenticated Users, so changing
-only the token file ACL may still allow another user to replace it through the
-parent directory. Apply ACL changes manually after confirming the service
-account; keep Modify access for that account so token refresh and atomic writes
-continue to work. Review the impact on other files in `src\data` before
-removing inherited permissions.
+On Windows, restrict access to the token file and its containing directory
+(default `src\data`) to the account that runs the API, `SYSTEM`, and
+Administrators. The service does not manage Windows ACLs; apply restrictions
+manually to both the file and parent directory after confirming the service
+account. Keep Modify access for that account so token refresh and atomic writes
+continue to work.
 
-> **Current deployment model:** the app is designed for a single server instance using local filesystem persistence only (`data/` and `models/`). This is safe for one server / one client deployment, but multi-instance/load-balanced deployment is a known future constraint.
+### State storage and readiness
+
+By default, state remains in the project directories (`data/`, `models/`,
+`outputs/` and `src/data/google_oauth_tokens.json`). Configure paths in the API
+process environment before startup:
+
+| Variable | Purpose |
+| --- | --- |
+| `TAXI_GROUPER_STATE_DIR` | Root for state; data, models and outputs are stored in its `data/`, `models/` and `outputs/` subdirectories, and the OAuth token file defaults to `data/google_oauth_tokens.json`. |
+| `TAXI_GROUPER_DATA_DIR` | Optional override for the data directory. |
+| `TAXI_GROUPER_MODELS_DIR` | Optional override for the models directory. |
+| `TAXI_GROUPER_TOKEN_PATH` | Optional override for the OAuth token file. |
+
+Relative override paths are resolved under `TAXI_GROUPER_STATE_DIR` (or the
+project directory when it is unset). On POSIX, newly created state directories
+are restricted to mode `0700` and the token file is set to `0600`; an existing
+group/world-readable token file is warned about but must be corrected by the
+operator. On Windows, token-file permissions must be set by the operator.
+`GET /ready` returns `200` only when the state directory is writable, the API
+key is at least 32 characters, and the default ML model exists.
+
+The OAuth handshake state is held in memory, so run exactly one API worker.
+Multiple workers or server instances do not share OAuth state and may fail the
+login callback.
 
 Note: The app requires both the Sheets scope and the Drive "file" scope (`https://www.googleapis.com/auth/drive.file`) so the Google Picker and backend Drive metadata/convert operations can access the user-selected file. Using Sheets-only caused 403s when the picker selected files.
 

@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 import os
+import stat
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -16,13 +19,103 @@ UNKNOWN_ZONE = "UNKNOWN"
 TAXI_COLUMN = "Groupe Taxi"
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DATA_DIR = PROJECT_ROOT / "data"
-MODELS_DIR = PROJECT_ROOT / "models"
-OUTPUTS_DIR = PROJECT_ROOT / "outputs"
+
+
+def _resolve_path(value: str | None, default: Path, relative_to: Path) -> Path:
+    if value is None:
+        return default.resolve()
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        path = relative_to / path
+    return path.resolve()
+
+
+_configured_state_dir = os.getenv("TAXI_GROUPER_STATE_DIR") or None
+STATE_DIR = _resolve_path(_configured_state_dir, PROJECT_ROOT, PROJECT_ROOT)
+DATA_DIR = _resolve_path(
+    os.getenv("TAXI_GROUPER_DATA_DIR") or None,
+    STATE_DIR / "data",
+    STATE_DIR,
+)
+MODELS_DIR = _resolve_path(
+    os.getenv("TAXI_GROUPER_MODELS_DIR") or None,
+    STATE_DIR / "models",
+    STATE_DIR,
+)
+OUTPUTS_DIR = (STATE_DIR / "outputs").resolve()
+_default_token_path = (
+    DATA_DIR / "google_oauth_tokens.json"
+    if _configured_state_dir is not None
+    else PROJECT_ROOT / "src" / "data" / "google_oauth_tokens.json"
+)
+TOKEN_PATH = _resolve_path(
+    os.getenv("TAXI_GROUPER_TOKEN_PATH") or None,
+    _default_token_path,
+    STATE_DIR,
+)
 DEFAULT_MODEL_PATH = MODELS_DIR / "taxi_grouping_model.pkl"
 DEFAULT_CANDIDATE_MODEL_PATH = MODELS_DIR / "candidate" / DEFAULT_MODEL_PATH.name
 DEFAULT_CONFIG_PATH = MODELS_DIR / "config.json"
 DEFAULT_MAX_UPLOAD_SIZE_BYTES = 10 * 1024 * 1024
+logger = logging.getLogger(__name__)
+
+
+def is_directory_writable(directory: Path) -> bool:
+    try:
+        with tempfile.TemporaryFile(dir=directory):
+            pass
+    except OSError:
+        return False
+    return True
+
+
+def _create_state_directory(directory: Path, name: str) -> None:
+    existed = directory.exists()
+    try:
+        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if os.name != "nt" and not existed:
+            directory.chmod(0o700)
+    except OSError:
+        logger.error("State initialization failed: %s", name)
+        raise
+    if not is_directory_writable(directory):
+        logger.error("State initialization failed: %s", name)
+        raise PermissionError(f"{name} is not writable.")
+
+
+def secure_token_file_permissions() -> None:
+    if not TOKEN_PATH.exists():
+        return
+    if os.name == "nt":
+        logger.warning("Windows token-file permissions must be set by the operator.")
+        return
+    TOKEN_PATH.chmod(0o600)
+
+
+def _warn_if_token_file_permissions_are_insecure() -> None:
+    if not TOKEN_PATH.exists():
+        return
+    if os.name == "nt":
+        logger.warning("Windows token-file permissions must be set by the operator.")
+        return
+    if stat.S_IMODE(TOKEN_PATH.stat().st_mode) & 0o077:
+        logger.warning("Token file is group or world readable.")
+
+
+def ensure_state_directories() -> None:
+    directories = (
+        (STATE_DIR, "state_directory"),
+        (DATA_DIR, "data_directory"),
+        (MODELS_DIR, "models_directory"),
+        (OUTPUTS_DIR, "outputs_directory"),
+        (TOKEN_PATH.parent, "token_directory"),
+    )
+    checked: set[Path] = set()
+    for directory, name in directories:
+        if directory not in checked:
+            _create_state_directory(directory, name)
+            checked.add(directory)
+    _warn_if_token_file_permissions_are_insecure()
 
 
 def _configured_max_upload_size_bytes() -> int:
