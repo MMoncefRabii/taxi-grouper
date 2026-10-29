@@ -9,8 +9,8 @@ reference for the later Fleet Tracker Sheets/Picker port.
 
 ## Authentication
 
-All application routes require the API key except `GET /health` and
-`GET /auth/callback`. CORS `OPTIONS` preflight
+All application routes require the API key except `GET /health`, `GET /ready`,
+and `GET /auth/callback`. CORS `OPTIONS` preflight
 requests also pass without authentication; they do not invoke protected route
 handlers. OAuth status, token, and logout routes are protected too. Send the
 key as a bearer credential:

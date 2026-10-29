@@ -115,16 +115,10 @@ python api.py
 ```
 
 Business, debug, API documentation, and OAuth-management routes require the
-<<<<<<< HEAD
-`TAXI_GROUPER_API_KEY` server environment variable and an
-`Authorization: Bearer <key>` header. `/health`, `/api/auth/login-url`, and
-`/auth/callback`; `/ready` is also unauthenticated (CORS
-`OPTIONS` preflight requests also pass without authentication). If the server key is
-=======
 `TAXI_GROUPER_API_KEY` server environment variable and a bearer authorization
-header. `/health` and `/auth/callback` are the only unauthenticated application
-endpoints (CORS `OPTIONS` preflight requests also pass without authentication). If the server key is
->>>>>>> df20fed (fix(auth): require API key on OAuth login-url)
+header. `/health`, `/ready`, and `/auth/callback` are the only unauthenticated
+application endpoints (CORS `OPTIONS` preflight requests also pass without
+authentication). If the server key is
 missing or shorter than 32 characters, protected requests fail closed with
 HTTP 503; missing or incorrect caller credentials receive HTTP 401.
 
@@ -154,12 +148,8 @@ protected routes. Do not relaunch it.
 Available endpoints include:
 
 - `GET /health` — health check
-<<<<<<< HEAD
 - `GET /ready` — readiness check; unauthenticated and returns no check details
-- `GET /api/auth/login-url` — Google OAuth login URL
-=======
 - `GET /api/auth/login-url` — Google OAuth login URL (requires the API key)
->>>>>>> df20fed (fix(auth): require API key on OAuth login-url)
 - `GET /api/auth/status` — OAuth sign-in status
 - `POST /api/group-sheet` — group agents from a Google Sheet and write results back
 
@@ -383,7 +373,7 @@ Other key folders:
 - `main.py`, `api.py`, and `app.py` now orchestrate the new `src/` packages.
 - Model metadata is loaded from `models/config.json` or `models/training_report.json` and attached explicitly to ML models.
 - OAuth token storage no longer persists sensitive `client_secret` values.
-- Default Google scopes are now limited to `https://www.googleapis.com/auth/spreadsheets`.
+- Default Google scopes include `https://www.googleapis.com/auth/spreadsheets` and `https://www.googleapis.com/auth/drive.file`.
 - Compatibility rules and constants are in `src/config/__init__.py`.
 - Grouping logic is implemented in `src/core/grouper.py`.
 - Export formatting lives in `src/adapters/exporter.py`.
