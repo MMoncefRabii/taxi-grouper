@@ -375,23 +375,18 @@ Other key folders:
 
 ```text
 .
+├── config/
+├── data/
+├── docs/
+├── frontend/  # retired and unsupported; do not run
+├── models/
+├── outputs/   # generated exports
+├── src/
+├── tests/
 ├── api.py
 ├── app.py
 ├── main.py
 ├── train.py
-├── models/
-├── data/
-├── outputs/
-├── src/
-│   ├── adapters/
-│   ├── api/
-│   ├── config/
-│   ├── core/
-│   ├── data/
-│   ├── logging_config.py
-│   ├── schemas/
-├── frontend/
-├── tests/
 ├── requirements.txt
 ├── requirements-ui.txt
 ```
