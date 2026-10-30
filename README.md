@@ -24,7 +24,7 @@ It supports Excel dispatch input, address normalization, zone compatibility, opt
 ## Prerequisites
 
 1. Windows, macOS, or Linux.
-2. Python 3.10+ installed and available as `python`.
+2. Python 3.13 installed and available as `python`.
 3. `pip` available in the selected Python environment.
 4. The React/Vite code under `frontend/` is retained only as a reference and is unsupported; do not run it.
 
@@ -32,22 +32,39 @@ It supports Excel dispatch input, address normalization, zone compatibility, opt
 
 ## Install
 
-Open a terminal at the repository root (`c:\Users\MSI\Desktop\taxi_grouper`) and run:
+Open a terminal at the repository root. Create and activate an environment:
 
-```bash
+```powershell
 python -m venv .venv
-.venv\Scripts\activate
-python -m pip install --upgrade pip
-pip install -r requirements.txt
+.\.venv\Scripts\Activate.ps1
 ```
 
-If you want the UI-specific package set instead of the full API stack, use:
+Install the package set you need (all paths are relative to the repository root):
 
-```bash
-pip install -r requirements-ui.txt
+```powershell
+python -m pip install -r requirements.txt
 ```
 
-> On macOS/Linux use `source .venv/bin/activate` instead of the Windows activate command.
+```powershell
+python -m pip install -r requirements-ui.txt
+```
+
+```powershell
+python -m pip install -r requirements-desktop.txt
+```
+
+```powershell
+python -m pip install -r requirements-test.lock
+```
+
+`requirements.txt` is the runtime set for the API, CLI, and Sheets integration.
+`requirements-ui.txt` adds Streamlit. The separate `requirements-desktop.txt`
+is an optional, legacy set for the PySide6 desktop app and is larger to install.
+The test lock includes the runtime set, test dependencies, and `pip-audit`.
+Each set can be installed into its own environment; the desktop package set is
+not needed for the API or Streamlit app.
+
+On macOS/Linux, activate the environment with `source .venv/bin/activate`.
 
 
 ---
@@ -290,33 +307,34 @@ The CLI writes an additional validation report in the same output folder with a 
 
 ## Run the tests
 
-The repository uses `pytest` for automated tests.
-
-From the project root:
-
-```bash
-pytest
-```
-
-To run a single file:
-
-```bash
-pytest tests/test_grouper.py
-```
-
-### Reproducible test environment (Windows)
-
-With Python 3.13.5 registered with the Python launcher, create a fresh
-environment and install the fully pinned test dependencies:
+The repository uses `pytest`. For a clean, reproducible Windows test
+environment, run these commands from the repository root:
 
 ```powershell
 py -3.13 -m venv .venv-test
-.\.venv-test\Scripts\python.exe --version
 .\.venv-test\Scripts\python.exe -m pip install -r requirements-test.lock
-.\.venv-test\Scripts\python.exe -m pytest
+.\.venv-test\Scripts\Activate.ps1
+python -m pytest -q
 ```
 
-The version check should report Python 3.13.5. `.venv-test` is ignored by Git.
+`.python-version` records the supported lock-generation and test interpreter
+minor version, Python 3.13. `.venv-test` is ignored by Git.
+
+### Updating dependency locks
+
+Install `pip-tools` in a separate tooling environment, then run these commands
+from the repository root to regenerate all resolved, exact-version locks:
+
+```powershell
+pip-compile --upgrade --generate-hashes --output-file requirements.txt requirements.in
+pip-compile --upgrade --generate-hashes --output-file requirements-ui.txt requirements-ui.in
+pip-compile --upgrade --generate-hashes --output-file requirements-desktop.txt requirements-desktop.in
+pip-compile --upgrade --generate-hashes --output-file requirements-test.lock requirements-test.in
+```
+
+Review the resulting diffs, install the test and UI sets in fresh environments,
+run `python -m pytest -q`, and audit each lock with `pip-audit -r <lock-file>`
+before accepting updates.
 
 ---
 
