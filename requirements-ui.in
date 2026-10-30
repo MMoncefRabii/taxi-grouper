@@ -1,2 +1,3 @@
 -r requirements.in
 streamlit
+pillow>=13.0.0

@@ -323,18 +323,30 @@ minor version, Python 3.13. `.venv-test` is ignored by Git.
 ### Updating dependency locks
 
 Install `pip-tools` in a separate tooling environment, then run these commands
-from the repository root to regenerate all resolved, exact-version locks:
+from the repository root to update the security-related packages in each lock:
 
 ```powershell
-pip-compile --upgrade --generate-hashes --output-file requirements.txt requirements.in
-pip-compile --upgrade --generate-hashes --output-file requirements-ui.txt requirements-ui.in
-pip-compile --upgrade --generate-hashes --output-file requirements-desktop.txt requirements-desktop.in
-pip-compile --upgrade --generate-hashes --output-file requirements-test.lock requirements-test.in
+pip-compile --no-header --no-annotate --upgrade-package cryptography --upgrade-package oauthlib --output-file requirements.txt requirements.in
+pip-compile --no-header --no-annotate --upgrade-package cryptography --upgrade-package oauthlib --upgrade-package pillow --output-file requirements-ui.txt requirements-ui.in
+pip-compile --no-header --no-annotate --upgrade-package cryptography --upgrade-package oauthlib --output-file requirements-desktop.txt requirements-desktop.in
+pip-compile --no-header --no-annotate --upgrade-package cryptography --upgrade-package oauthlib --output-file requirements-test.lock requirements-test.in
 ```
 
-Review the resulting diffs, install the test and UI sets in fresh environments,
-run `python -m pytest -q`, and audit each lock with `pip-audit -r <lock-file>`
-before accepting updates.
+These commands preserve unrelated locked versions while updating the named
+packages and their required dependencies. Hashes are not used; hash generation
+has not been verified to complete within five minutes. Review the resulting
+diffs, install the test and UI sets in fresh environments, run
+`python -m pytest -q`, and audit each lock before accepting updates:
+
+```powershell
+pip-audit -r requirements.txt --desc
+pip-audit -r requirements-ui.txt --desc
+pip-audit -r requirements-desktop.txt --desc
+pip-audit -r requirements-test.lock --desc
+```
+
+See [docs/SECURITY_AUDIT.md](docs/SECURITY_AUDIT.md) for the latest advisory
+review and the project-specific reachability assessment.
 
 ---
 
