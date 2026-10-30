@@ -13,9 +13,12 @@ data/google_oauth_tokens.json
 
 # Local training data, corrections, and caches
 data/auto_training_corrections.jsonl
+data/auto_training_corrections.debug.jsonl
 data/unknown_destinations.csv
 data/retrain_state.json
 data/pre_correction_cache/
+data/debug_post_correction_cache/
+data/corrected/
 data/raw/sample_agents.xlsx
 data/training_files/auto_corrections.xlsx
 data/training_files/sample_training.xlsx
@@ -29,6 +32,8 @@ sample_training__ml_vs_no_ml.csv
 *.onnx
 models/**/training_report.json
 models/**/evaluation_report.json
+models/promotion_log.jsonl
+models/rollback/
 
 # Python environments and caches
 __pycache__/
@@ -49,6 +54,7 @@ frontend/build/
 /dist/
 
 # OS, editor, and temporary files
+.vscode/
 Thumbs.db
 .DS_Store
 *.log
@@ -56,6 +62,7 @@ Thumbs.db
 .idea/
 
 # Local exports and data-bearing spreadsheets
+outputs/
 test_ramassage.xlsx
 tmp_training_test.xlsx
 e2e_grouped_output.xlsx
